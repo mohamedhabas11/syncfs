@@ -1,7 +1,11 @@
 # Metrics — data-driven development table
 
-Date: 2026-11-08 · Go 1.26.0 darwin/arm64 (Apple M4) · Loop Iterations 1–2 closed.
-Workload: `test/benchmark/edge.sh` (`test/benchmark/edge_workload_test.go`).
+Date: 2026-11-08 · Docker Desktop Linux VM (floor/sweep, commit `d0adf1d` +
+uncommitted bench harness) · Loop Iterations 1–2 closed.
+Workload: `test/benchmark/edge.sh` (`test/benchmark/edge_workload_test.go`);
+floor/sweep: `make bench-floor` / `make bench-sweep` (`cmd/bench-floor`,
+`cmd/bench-sweep`). Policy: every table states Docker Desktop VM + volume
+type + commit + exact command; absolute numbers NEVER vs spec §11 (UNVERIFIED).
 
 ## A. Final suite (after Iteration 1 fixes)
 
@@ -31,7 +35,20 @@ Workload: `test/benchmark/edge.sh` (`test/benchmark/edge_workload_test.go`).
 | `BenchmarkEdgeInvalidNameReject` | 8.5 µs/op (fail-fast) |
 | `BenchmarkEdgeAtomicBatchReject` | 1.6 µs/op (pre-validated, no writes) |
 
-Environment: Apple M4, Go 1.26.0, `t.TempDir()`, in-process (no QUIC/FUSE/NVMe). Do **not** compare to §11 (1,000 ops/s, p99 ≤ 25 ms on 10 GbE+NVMe). Honest baseline only.
+Environment: Apple M4, Go 1.26.0, `t.TempDir()`, in-process (no QUIC/FUSE/NVMe). Do **not** compare to §11 (1,000 ops/s, p99 ≤ 25 ms on 10 GbE+NVMe). Honest baseline only. **Pre-policy env (non-compliant).** For compliant Docker Desktop data see §E below.
+
+## E. bench-floor + bench-sweep (Docker Desktop, compliant)
+
+Fresh-volume runs after `docker volume rm syncfs_bench-data` (2026-11-08, commit `d0adf1d` + uncommitted harness). Data: tmpfs (`/bench/tmpfs`) or named volume (`/bench/volume`); never a macOS bind mount. Fresh 4 KiB payloads only; dedup: floor N/A (raw file), sweep not in play (distinct ChunkIDs == ops). fsyncs/entry: floor 1, sweep 6 (3 voters × pack+dir Sync). Warm-cache re-run measured ~10x faster on the same volume — treat as order-of-magnitude.
+
+| Sweep | Volume | 1c | 8c | 32c | 128c | floor-fraction | gap (tmpfs/vol) |
+|---|---|---|---|---|---|---|---|
+| ops/s | named_volume (floor 2,434) | 795 | 897 | 913 | 917 | 0.33–0.38 | — |
+| ops/s | tmpfs (floor ~1.05M) | 9,806 | 12,286 | 11,741 | 13,751 | 0.009–0.013 | 12–15x |
+| p50 ms | named_volume | 1.14 | 8.60 | 34.5 | 139 | — | — |
+| CPU+alloc | both | — | — | — | — | alloc ~85 KiB/op, ~52 mallocs/op, CPU ~0.08–0.3 ms/op (see `sweep.md`) | — |
+
+Throughput flat vs clients on named volume (fsync-serialized); p50 latency grows ~120x (queueing). RTT (TCP connect): loopback p50 ~0.03–0.08 ms, between-nodes (node-b:22) p50 ~0.1–0.23 ms (see `floor.md`). Netem (0.5/2/20 ms) is a separate table (`netem.md`, UNVERIFIED — not run).
 
 ## C. Maturity gates G1–G10 (critic §F)
 

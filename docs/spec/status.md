@@ -23,6 +23,9 @@ Honest per-milestone state. Allowed: NOT_STARTED | PARTIAL | DONE | DEFERRED | B
 | M4-03 CLI/systemd | DONE | `go test ./cmd/...` PASS (d5371f3) + validation (a915888: `TestAdminCLIParsing`, `TestRenderUnit`); systemd units `deploy/systemd/` |
 | M4-04 fault harness | DONE | `go test ./internal/testkit/...` PASS (66bd4db): kill/pause/partition/delay/duplicate/disk-full/corrupt-pack/client-restart kinds + history/realizability |
 | M5-01 durability/HA/perf qualification | DEFERRED | ADR-0001 (docs/adr/0001-defer-m5-qualification.md) — needs reference hardware; harness + in-process numbers in `docs/benchmarks/` only |
+| §11 perf 4 KiB quorum write 1,000 ops/s p99 ≤ 25 ms | UNVERIFIED | needs 3× NVMe honoring flushes (ext4 `data=ordered`, barriers on, `commit=5s`) + 10 GbE low-latency, Pebble `Sync`; Docker Desktop numbers in `docs/benchmarks/floor.md`/`sweep.md` NEVER satisfy this |
+| §11 perf create/write/rename 500 ops/s p99 ≤ 30 ms | UNVERIFIED | same reference hardware as above |
+| §11 perf cache-hit strict reads p99 ≤ 2 ms | UNVERIFIED | same reference hardware as above; no QUIC/lease measurement exists here |
 | M5-02 target-app qualification | DEFERRED | Same ADR; needs a real HA suite target (HUMAN_TODO) |
 | Observability (M4-03 tail) | DONE | `go test ./internal/observability/... -race` PASS |
 | Xattr user.* surface | DONE | `TestXattrUserNamespaceOnly` |

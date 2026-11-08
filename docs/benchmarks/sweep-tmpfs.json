@@ -1,0 +1,65 @@
+{
+  "tool": "bench-sweep",
+  "commit_sha": "d0adf1d",
+  "env": "Docker Desktop Linux VM (aarch64, golang:1.26-alpine)",
+  "volume_type": "tmpfs",
+  "data_dir": "/bench/tmpfs/sweep",
+  "command": "/root/.cache/go-build/63/63dafcff7e926c01dc35f2ebe82eb5675ed37a2dac25dbea234f562354ebc4e0-d/bench-sweep -dir /bench/tmpfs/sweep -clients 1,8,32,128 -n 100 -volume-type tmpfs",
+  "payload_bytes": 4096,
+  "per_client": 100,
+  "rows": [
+    {
+      "clients": 1,
+      "ops_per_sec": 9806.40489645564,
+      "p50_ms": 0.044,
+      "p99_ms": 1.231,
+      "max_ms": 1.231,
+      "fsyncs_per_committed_entry": 6,
+      "alloc_bytes_per_op": 86158.32,
+      "mallocs_per_op": 54.46,
+      "cpu_ms_per_op": 0,
+      "wall_secs": 0.010197417,
+      "dedup_note": "not in play: all payloads fresh (counter); distinct ChunkIDs == ops"
+    },
+    {
+      "clients": 8,
+      "ops_per_sec": 12285.766939001169,
+      "p50_ms": 0.05,
+      "p99_ms": 2.978,
+      "max_ms": 3.866,
+      "fsyncs_per_committed_entry": 6,
+      "alloc_bytes_per_op": 85479.71,
+      "mallocs_per_op": 51.70625,
+      "cpu_ms_per_op": 0.075,
+      "wall_secs": 0.065116,
+      "dedup_note": "not in play: all payloads fresh (counter); distinct ChunkIDs == ops"
+    },
+    {
+      "clients": 32,
+      "ops_per_sec": 11741.017042339403,
+      "p50_ms": 2.647,
+      "p99_ms": 4.697,
+      "max_ms": 5.446,
+      "fsyncs_per_committed_entry": 6,
+      "alloc_bytes_per_op": 85438.085,
+      "mallocs_per_op": 51.578125,
+      "cpu_ms_per_op": 0.078125,
+      "wall_secs": 0.272548791,
+      "dedup_note": "not in play: all payloads fresh (counter); distinct ChunkIDs == ops"
+    },
+    {
+      "clients": 128,
+      "ops_per_sec": 13751.080280301032,
+      "p50_ms": 9.045,
+      "p99_ms": 13.547,
+      "max_ms": 14.256,
+      "fsyncs_per_committed_entry": 6,
+      "alloc_bytes_per_op": 85294.224375,
+      "mallocs_per_op": 51.384140625,
+      "cpu_ms_per_op": 0.07421875,
+      "wall_secs": 0.930835959,
+      "dedup_note": "not in play: all payloads fresh (counter); distinct ChunkIDs == ops"
+    }
+  ],
+  "date": "2026-11-08"
+}

@@ -3,50 +3,61 @@
 Numbers come **only from real runs**. This directory records each run's
 methodology so numbers can be reproduced — and judged for what they don't show.
 
-Harness: `test/benchmark/workload_test.go` (go test/bench) + edge-case
-workplace `test/benchmark/edge_workload_test.go` with runner
-`test/benchmark/edge.sh`.
+## Policy (laptop / Docker Desktop)
 
-## Honest rerun (2026-11-08, reflection loop Iteration 1)
+- Every result states its environment: **Docker Desktop, Linux VM**
+  (`aarch64, golang:1.26-alpine`), **volume type** (`tmpfs` or `named_volume`;
+  never a macOS bind mount for data — `/src` is read-only code), **commit sha**,
+  and **exact command** (see each JSON's `command` + `commit_sha` fields).
+- **Absolute numbers from this environment are NEVER compared against spec
+  targets.** Any spec target requiring specific hardware is marked
+  **UNVERIFIED** in `docs/spec/status.md` with the hardware it needs.
+- Throughput is reported as a **fraction of the measured fsync floor**
+  (`make bench-floor`) plus the **tmpfs-vs-volume gap**. Fresh payloads only;
+  dedup state is recorded per table (floor: N/A, raw file; sweep: not in play
+  by construction, distinct ChunkIDs verified).
+- Netem profiles (0.5 / 2 / 20 ms RTT) live in a **separate, labelled table**
+  (`netem.md`), never mixed with the baseline.
 
-The prior harness reused the *same* payload every iteration, so iterations
-2..1000 hit the chunkstore dedup fast path (Pebble Get, ~0.02 ms) instead of
-the Put+fsync path. Reported 21,865 ops/s was therefore a dedup-cache number,
-not a quorum-fsync number. The harness now uses fresh payloads per iteration
-(counter bytes in the first 8 bytes), forcing real fsyncs.
+Harnesses: `cmd/bench-floor`, `cmd/bench-sweep` (Go, run in-VM via
+`make bench-floor` / `make bench-sweep`), plus `test/benchmark/` edge gate
+(`test/benchmark/edge.sh`). Render: `python3 scripts/bench-render.py`.
 
-- Host: darwin/arm64 Apple M4, Go 1.26.0, `t.TempDir()` stores, in-process
-  fan-out (no QUIC, no FUSE, no NVMe/10 GbE claim).
-- Commands:
-  - `go test ./test/benchmark/... -run TestEdge -v -count=1 -race` → gate PASS (C1–C8).
-  - `go test ./test/benchmark/... -run XXX -bench 'Edge' -benchtime=100x -count=1`
-  - `go test ./test/benchmark/... -run XXX -bench BenchmarkWorkloadQuorumWrite -benchtime=100x -count=1`
+## Compliant results (Docker Desktop, commit `d0adf1d` + uncommitted bench harness)
 
-| Metric | Dedup-inflated (before) | Fresh-payload (now) |
-| --- | --- | --- |
-| Quorum write 4 KiB, 3 voters | 21,865 ops/s, p50 0.021 ms | **~42–44 ops/s, p50 ~23 ms, p99 ~29–32 ms, max ~43 ms** |
-| Metadata dispatch (create+rename) | — | 61.7 µs/op (in-memory) |
-| Invalid-name reject | — | 8.5 µs/op (fail-fast, no panic) |
-| Atomic batch reject | — | 1.6 µs/op (pre-validation, no writes) |
+Fresh-volume runs (`docker volume rm syncfs_bench-data` before, 2026-11-08).
+Both `floor-volume.json` / `floor-tmpfs.json` and `sweep-volume.json` /
+`sweep-tmpfs.json` record env + volume type + commit + exact command.
 
-The ~400x correction is the honest number for this environment: fsync on
-local temp dirs over 3 in-process stores. Do not compare to the §11 gate
-(1,000 ops/s, p99 ≤ 25 ms on 10 GbE + NVMe) — different machine, different path.
+| Table | File | What |
+|---|---|---|
+| floor (write+fsync + RTT) | `floor.md` | 500x 4 KiB `WriteAt`+`Sync`, fresh counter payload, per volume type |
+| sweep (quorum writes) | `sweep.md` | 1,8,32,128 clients x 100 ops, 4 KiB fresh quorum writes, 6 fsyncs/entry |
+| netem | `netem.md` | separate table — **UNVERIFIED (not run)** |
 
-Cross-check (same harness, Docker ARM64 Linux `node-a`, 2026-11-08):
-fresh-payload ~823 ops/s, p50 ~1.17 ms — faster local fs in the VM, still
-NOT reference hardware and NOT the §11 gate.
-
-Raw JSON: `docs/benchmarks/results.json`.
-Data table + gate tracker: `docs/benchmarks/metrics-table.md`.
+Clean results (see files for per-run JSON): volume floor ~2,434 ops/s
+(p50 0.17 ms), tmpfs floor ~1.05M ops/s (fsync is a no-op in memory);
+volume sweep ~795–917 ops/s (0.33–0.38 of floor, p50 1.1 ms → 139 ms as
+clients grow 1 → 128), tmpfs sweep ~9.8K–13.8K ops/s; gap tmpfs/volume
+~12–15x. **Variance warning:** a warm-cache re-run measured ~8K ops/s on
+the same named volume (10x). Treat these as order-of-magnitude VM
+observations, not stable targets — re-run after `docker volume rm` for
+comparable cold numbers.
 
 ## What this does NOT show
 
-- Nothing about the §11 qualification gates (p99 ≤ 25ms at 1000 ops/s on
-  10 GbE + NVMe, `fsync` honor) — different environment, different path
-  (in-process, no FUSE, no QUIC, no network).
-- Nothing about strict-mode reads (ReadIndex + leases) or group commit.
-- Nothing about target-application behavior (M5-02 suite).
+- Nothing about the §11 qualification gates (1,000 ops/s, p99 ≤ 25 ms,
+  etc.) — different environment (NVMe + 10 GbE required, UNVERIFIED).
+- Nothing about QUIC, FUSE, lease revocation, or group commit (sweep is
+  in-process fan-out; floor is raw file I/O).
+- Nothing about target-application behavior (M5-02).
 
-No conclusion is drawn from these numbers beyond "the edge gate passes and
-the fsync path costs ~23 ms at p50 on this laptop".
+## Pre-policy runs (retained for provenance only — NOT floor/sweep results)
+
+- Laptop `darwin/arm64`, `t.TempDir()` (macOS filesystem), ~42 ops/s /
+  p50 ~24 ms (`results.json` pre-policy part). Dedup-inflated 21,865 ops/s
+  duplicate-payload number is superseded by the fresh-payload harness.
+- Docker `node-a` run via `test/benchmark/edge.sh` with `t.TempDir()` on
+  the container overlay (not tmpfs/named) — also non-compliant under this
+  policy. Edge **correctness** gate (`TestEdge`, C1–C8) still stands; its
+  **throughput** numbers are not floor/sweep data.

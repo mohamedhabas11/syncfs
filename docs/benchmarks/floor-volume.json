@@ -1,0 +1,34 @@
+{
+  "tool": "bench-floor",
+  "commit_sha": "d0adf1d",
+  "env": "Docker Desktop Linux VM (aarch64, golang:1.26-alpine)",
+  "volume_type": "named_volume",
+  "data_dir": "/bench/volume/floor",
+  "command": "/root/.cache/go-build/dd/dde527769976fa4d0dff04977461ca82ca11a2cf804d9bd7f7be61b84b9dba98-d/bench-floor -dir /bench/volume/floor -volume-type named_volume -n 500 -peer node-b",
+  "iterations": 500,
+  "payload_bytes": 4096,
+  "ops_per_sec": 2434.395582982019,
+  "p50_ms": 0.173,
+  "p99_ms": 2.948,
+  "max_ms": 5.868,
+  "bytes_per_sec": 9971284.30789435,
+  "fsyncs_per_committed_entry": 1,
+  "alloc_bytes_per_op": 22.448,
+  "mallocs_per_op": 0.026,
+  "cpu_ms_per_op": 0.02,
+  "loopback_rtt_ms": {
+    "count": 20,
+    "min": 0.018,
+    "p50": 0.029,
+    "p99": 0.127
+  },
+  "peer_rtt_ms": {
+    "count": 20,
+    "min": 0.088,
+    "p50": 0.225,
+    "p99": 0.858
+  },
+  "peer_status": "measured TCP connect (DialTimeout 2s, 20 attempts)",
+  "dedup_note": "N/A: raw file write, no chunkstore dedup; counter changes per iteration",
+  "date": "2026-11-08"
+}

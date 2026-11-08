@@ -1,0 +1,34 @@
+{
+  "tool": "bench-floor",
+  "commit_sha": "d0adf1d",
+  "env": "Docker Desktop Linux VM (aarch64, golang:1.26-alpine)",
+  "volume_type": "tmpfs",
+  "data_dir": "/bench/tmpfs/floor",
+  "command": "/root/.cache/go-build/dd/dde527769976fa4d0dff04977461ca82ca11a2cf804d9bd7f7be61b84b9dba98-d/bench-floor -dir /bench/tmpfs/floor -volume-type tmpfs -n 500 -peer node-b",
+  "iterations": 500,
+  "payload_bytes": 4096,
+  "ops_per_sec": 1045294.7103906475,
+  "p50_ms": 0,
+  "p99_ms": 0.001,
+  "max_ms": 0.012,
+  "bytes_per_sec": 4281527133.7600923,
+  "fsyncs_per_committed_entry": 1,
+  "alloc_bytes_per_op": 22.448,
+  "mallocs_per_op": 0.026,
+  "cpu_ms_per_op": 0,
+  "loopback_rtt_ms": {
+    "count": 20,
+    "min": 0.019,
+    "p50": 0.038,
+    "p99": 0.174
+  },
+  "peer_rtt_ms": {
+    "count": 20,
+    "min": 0.074,
+    "p50": 0.188,
+    "p99": 0.326
+  },
+  "peer_status": "measured TCP connect (DialTimeout 2s, 20 attempts)",
+  "dedup_note": "N/A: raw file write, no chunkstore dedup; counter changes per iteration",
+  "date": "2026-11-08"
+}

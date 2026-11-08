@@ -13,6 +13,22 @@
 #                    Mount tests need the fusermount binary at runtime (present).
 
 services:
+  bench:
+    # Benchmark sandbox for `make bench-floor` / `make bench-sweep`.
+    # Data NEVER lands on the ./:/src code bind mount: tmpfs at /bench/tmpfs
+    # and named volume bench-data at /bench/volume. Linux VM (Docker Desktop).
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /src
+    tmpfs: /bench/tmpfs
+    volumes:
+      - .:/src:ro
+      - bench-data:/bench/volume
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache
+    command: go run ./cmd/bench-floor -dir /bench/tmpfs -n 1
+
   node-a:
     build:
       context: .
@@ -62,6 +78,7 @@ services:
     command: go test ./... -count=1 -race
 
 volumes:
+  bench-data:
   node-a-data:
   node-b-data:
   node-c-data:
