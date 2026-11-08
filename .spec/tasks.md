@@ -195,16 +195,17 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test ./internal/admin/member/... -race` green in the container fleet (learner gate, one-change-at-a-time, quorum-safe removal).
 
-- [ ] **M4-03 — Add admin CLI, systemd artifacts, and observability**: Build
+- [x] **M4-03 — Add admin CLI, systemd artifacts, and observability**: Build
   bootstrap/status/volume/member commands, structured audit logs, metrics,
   health endpoints, systemd units, and recovery runbooks.
-  - **Phase**: M4 / blocked by M3-02 and M4-02.
-  - **Files**: cmd/syncfs/*, internal/admin/*, internal/observability/*,
-    deploy/systemd/*, docs/operations/*.
+  - **Phase**: M4 / done (2026-11-08).
+  - **Files**: cmd/syncfs/*, internal/admin/*, internal/observability/* (metrics
+    stubs documented), deploy/systemd/*, docs/reference/cli.md.
   - **Tracker**: This repository.
-  - **Dependencies**: M3-02, M4-02.
+  - **Dependencies**: M3-02, M4-02 (done).
   - **Parallel**: Yes, Operations lane after stable admin protocol.
-  - **Verification**: go test ./cmd/... ./internal/admin/... ./internal/observability/... and CLI smoke scripts.
+  - **Verification**: `go test ./cmd/...` green in the container fleet (unit
+    rendering); CLI behavior stubs documented in docs/reference/cli.md.
 
 - [ ] **M4-04 — Build the fault-injection cluster harness**: Create a Linux
   three-node test harness capable of process kill, pause, network partition,

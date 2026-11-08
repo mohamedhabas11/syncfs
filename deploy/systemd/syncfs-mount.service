@@ -1,0 +1,13 @@
+[Unit]
+Description=SyncFS FUSE mount (client)
+After=network-online.target syncfs-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/syncfs mount --volume jira-shared-home --target /srv/jira/shared-home
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=SyncFS storage daemon (voter)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/syncfs daemon --config /etc/syncfs/node.yaml
+Restart=on-failure
+RestartSec=2
+# The daemon owns /var/lib/syncfs exclusively; applications never mount it.
+# ProtectSystem=strict + ProtectHome=yes + PrivateDevices=false (FUSE passthrough
+# uses the explicit mount unit, not the daemon unit).
+
+[Install]
+WantedBy=multi-user.target

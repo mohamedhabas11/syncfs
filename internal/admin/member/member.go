@@ -23,12 +23,12 @@ const (
 
 // Member tracks one node through the workflow.
 type Member struct {
-	ID     uint64
-	Applied uint64 // last applied index seen by leader
-	Mtarget uint64 // commit index at which it may promote
+	ID       uint64
+	Applied  uint64 // last applied index seen by leader
+	Mtarget  uint64 // commit index at which it may promote
 	Promoted bool
 	Removed  bool
-	Phase  Phase
+	Phase    Phase
 }
 
 // Cluster is the state of one replacement project (one at a time, spec Inv.8).
