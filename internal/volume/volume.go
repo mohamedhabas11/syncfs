@@ -16,10 +16,11 @@ import (
 
 // Coordinator wires chunk durability to metadata commitment.
 type Coordinator struct {
-	mu     sync.Mutex
-	fsm    *metadata.StateMachine
-	stores map[uint64]*chunkstore.Store // voter id -> chunk store
-	quorum int
+	mu      sync.Mutex
+	fsm     *metadata.StateMachine
+	stores  map[uint64]*chunkstore.Store // voter id -> chunk store
+	quorum  int
+	nextIdx uint64 // monotonic RaftIndex allocator (distinct per proposal)
 }
 
 // NewCoordinator: stores keyed by voter id. quorum = majority of voters.
@@ -34,11 +35,25 @@ func NewCoordinator(fsm *metadata.StateMachine, stores map[uint64]*chunkstore.St
 // WriteChunks stages chunks locally (fsync) then fans out to a majority.
 // Returns durable receipts from at least `quorum` voters, or an error if a
 // majority cannot be made durable (e.g. disk full: refuse before commit).
+// The batch is atomic at admission: size/ctx validation happens before any
+// Put, so a rejected batch leaves no orphan chunk durable.
 func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunkstore.Receipt, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Pre-validate all chunk sizes before writing any chunk (batch atomicity).
+	for i, data := range chunks {
+		if len(data) == 0 || len(data) > chunkstore.ChunkSize {
+			return nil, fmt.Errorf("volume: chunk %d invalid size %d: %w", i, len(data), ErrNoQuorum)
+		}
+	}
 	var receipts []chunkstore.Receipt
-	for _, data := range chunks {
+	for i, data := range chunks {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var this []chunkstore.Receipt
 		for _, s := range c.stores {
 			cid, rc, err := s.Put(data)
@@ -49,7 +64,7 @@ func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunk
 			this = append(this, rc)
 		}
 		if len(this) < c.quorum {
-			return nil, fmt.Errorf("volume: chunk %d durable on %d/%d voters (need %d); refusing before commit", 0, len(this), len(c.stores), c.quorum)
+			return nil, fmt.Errorf("volume: chunk %d durable on %d/%d voters (need %d); refusing before commit: %w", i, len(this), len(c.stores), c.quorum, ErrNoQuorum)
 		}
 		receipts = append(receipts, this...)
 	}
@@ -62,10 +77,14 @@ func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunk
 func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *syncfsapi.Command) (metadata.OpResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return metadata.OpResult{}, err
+	}
 	if r, ok := c.fsm.GetOp(opID); ok {
 		return *r, nil
 	}
-	idx := uint64(1)
+	c.nextIdx++
+	idx := c.nextIdx
 	if err := c.fsm.Apply(opID, idx, cmd); err != nil {
 		return metadata.OpResult{}, err
 	}

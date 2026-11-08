@@ -59,6 +59,7 @@ func (c *Cache) InvalidateAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = map[[16]byte]Entry{}
+	c.leases = map[uint64]bool{}
 }
 
 // SetLease marks a lease present/absent.

@@ -80,6 +80,9 @@ func (h *Handler) WriteFile(name string, at int64, data []byte) (uint32, syscall
 	prevData := append([]byte(nil), ns.data...)
 	prevMtime := ns.mtime
 	end := at + int64(len(data))
+	if uint64(end) > MaxFileBytes {
+		return 0, syscall.EFBIG
+	}
 	if end > int64(len(ns.data)) {
 		ns.data = append(ns.data, make([]byte, end-int64(len(ns.data)))...)
 	}
@@ -108,6 +111,9 @@ func (h *Handler) Truncate(name string, size uint64) syscall.Errno {
 	defer ns.mu.Unlock()
 	if ns.kind != KFile {
 		return syscall.EISDIR
+	}
+	if size > MaxFileBytes {
+		return syscall.EFBIG
 	}
 	if size < uint64(len(ns.data)) {
 		ns.data = ns.data[:size]
@@ -144,13 +150,20 @@ func (h *Handler) Names() ([]string, syscall.Errno) {
 	return out, syscall.Errno(0)
 }
 
-// validName rejects empty, dot, and slash-bearing names (fail closed).
+// MaxFileBytes caps in-memory growth for the FUSE handler surface (quota gate).
+const MaxFileBytes = 16 << 20 // 16 MiB
+
+// validName rejects empty, dot, slash/NUL-bearing, and over-long names
+// (fail closed). Over-long names return ENAMETOOLONG.
 func validName(name string) syscall.Errno {
 	if name == "" || name == "." || name == ".." {
 		return syscall.EINVAL
 	}
+	if len(name) > 255 {
+		return syscall.ENAMETOOLONG
+	}
 	for i := 0; i < len(name); i++ {
-		if name[i] == '/' {
+		if name[i] == '/' || name[i] == 0 {
 			return syscall.EINVAL
 		}
 	}
@@ -170,6 +183,19 @@ func (h *Handler) Rename(src, dst string) syscall.Errno {
 	ns, ok := h.root.children[src]
 	if !ok {
 		return syscall.ENOENT
+	}
+	if old, hit := h.root.children[dst]; hit && old != ns {
+		// POSIX type checks: file onto dir -> EISDIR, dir onto file -> ENOTDIR,
+		// non-empty dir onto dir -> ENOTEMPTY. Plainer overwrites replace.
+		if ns.kind != KDir && old.kind == KDir {
+			return syscall.EISDIR
+		}
+		if ns.kind == KDir && old.kind != KDir {
+			return syscall.ENOTDIR
+		}
+		if ns.kind == KDir && old.kind == KDir && len(old.children) > 0 {
+			return syscall.ENOTEMPTY
+		}
 	}
 	delete(h.root.children, src)
 	h.root.children[dst] = ns

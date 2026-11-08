@@ -135,17 +135,36 @@ func (s *Store) scanPack(f *os.File) error {
 	}
 	off := 0
 	for off < len(data) {
-		id, offset, length, err := readRecord(data, off)
-		if err != nil {
-			// torn tail: truncate at last good record and stop
+		// Peek the length header first: a CRC failure with a plausible
+		// length (enough bytes remain) is mid-pack corruption — skip that
+		// record and keep scanning later durable records (never truncate
+		// them away). Only an incomplete tail truncates.
+		if off+4+3+32 > len(data) {
+			// Torn tail: incomplete header — truncate here.
 			_ = f.Truncate(int64(off))
 			_ = f.Sync()
 			return nil
 		}
-		_ = id
+		n := int(data[off+4])<<16 | int(data[off+5])<<8 | int(data[off+6])
+		recEnd := off + 4 + 3 + 32 + n
+		if n < 0 || n > ChunkSize || recEnd > len(data) {
+			// Torn tail: length claims more than remains.
+			_ = f.Truncate(int64(off))
+			_ = f.Sync()
+			return nil
+		}
+		_, offset, length, err := readRecord(data, off)
+		if err != nil {
+			// CRC mismatch on a fully-present record: skip it (quarantine)
+			// and continue with later records.
+			_ = offset
+			_ = length
+			off = recEnd
+			continue
+		}
 		_ = offset
 		_ = length
-		off = offset + length
+		off = recEnd
 	}
 	return nil
 }
@@ -170,9 +189,14 @@ func (s *Store) Put(data []byte) (ChunkID, Receipt, error) {
 	copy(id[:], sum[:])
 
 	if loc, err := s.lookupLocked(id); err == nil {
-		_ = loc
-		// already durable: idempotent success, no rewrite
-		return id, s.receiptLocked(id, uint64(len(data))), nil
+		// Dedup hit must be verified durable (BLAKE3 read-back) before
+		// returning a receipt. Corrupt on-disk bytes self-heal by rewrite.
+		if _, gerr := s.getLocked(id, loc); gerr != nil {
+			// Fall through to rewrite/heal below.
+			_ = gerr
+		} else {
+			return id, s.receiptLocked(id, uint64(len(data))), nil
+		}
 	}
 
 	if len(s.packs) == 0 {
@@ -216,6 +240,20 @@ func (s *Store) receiptLocked(id ChunkID, bytes uint64) Receipt {
 	return Receipt{ChunkID: id, StoreGeneration: s.generation, VerifiedBytes: bytes}
 }
 
+func (s *Store) getLocked(id ChunkID, loc location) ([]byte, error) {
+	if int(loc.packNumber) >= len(s.packs) || s.packs[loc.packNumber] == nil {
+		return nil, ErrNotFound
+	}
+	data, err := readAt(s.packs[loc.packNumber], loc.offset)
+	if err != nil {
+		return nil, err
+	}
+	if blake3.Sum256(data) != id {
+		return nil, ErrCorrupt
+	}
+	return data, nil
+}
+
 // Get returns chunk bytes after BLAKE3 verification.
 func (s *Store) Get(id ChunkID) ([]byte, error) {
 	s.mu.Lock()
@@ -227,17 +265,7 @@ func (s *Store) Get(id ChunkID) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if int(loc.packNumber) >= len(s.packs) {
-		return nil, ErrNotFound
-	}
-	data, err := readAt(s.packs[loc.packNumber], loc.offset)
-	if err != nil {
-		return nil, err
-	}
-	if blake3.Sum256(data) != id {
-		return nil, ErrCorrupt
-	}
-	return data, nil
+	return s.getLocked(id, loc)
 }
 
 // Has reports presence in the index.
@@ -278,6 +306,9 @@ func (s *Store) lookupLocked(id ChunkID) (location, error) {
 		return location{}, ErrNotFound
 	}
 	defer closer.Close()
+	if len(v) < 12 {
+		return location{}, ErrCorrupt
+	}
 	var l location
 	l.packNumber = binary.BigEndian.Uint32(v[:4])
 	l.offset = binary.BigEndian.Uint64(v[4:])

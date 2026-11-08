@@ -26,9 +26,16 @@ func (h *Handler) SetSyncer(s Syncer) {
 	h.syncer = s
 }
 
-// xattrName validates a name: only user.* is supported (EOPNOTSUPP otherwise).
+// xattrName validates a name: only user.* with a non-empty suffix is
+// supported (bare "user." and NUL-bearing keys are rejected).
 func xattrName(name string) (string, syscall.Errno) {
+	if strings.Contains(name, "\x00") {
+		return "", syscall.EINVAL
+	}
 	if strings.HasPrefix(name, "user.") {
+		if len(name) <= len("user.") {
+			return "", syscall.EINVAL
+		}
 		return name, syscall.Errno(0)
 	}
 	if name == "security.selinux" {
@@ -41,6 +48,9 @@ func xattrName(name string) (string, syscall.Errno) {
 func (h *Handler) SetXattr(name string, key string, value []byte) syscall.Errno {
 	if _, ne := xattrName(key); ne != 0 {
 		return ne
+	}
+	if len(value) > 64<<10 {
+		return syscall.EFBIG
 	}
 	h.mu.RLock()
 	ns, ok := h.root.children[name]

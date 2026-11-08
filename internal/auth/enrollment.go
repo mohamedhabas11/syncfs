@@ -38,6 +38,12 @@ type MemoryStore struct {
 func NewMemoryStore() *MemoryStore { return &MemoryStore{recs: map[string]EnrollmentRecord{}} }
 
 func (s *MemoryStore) Put(rec EnrollmentRecord) error {
+	if rec.NodeID == "" || rec.CertFingerprint == "" || rec.Nonce == "" {
+		return errors.New("auth: enrollment record must have non-empty node, fingerprint, and nonce")
+	}
+	if rec.ExpiresAt.IsZero() {
+		return errors.New("auth: enrollment record must have expiry")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.recs[rec.NodeID]; ok {
@@ -61,6 +67,9 @@ func (s *MemoryStore) MarkConsumed(nodeID string, at time.Time) error {
 	if !ok {
 		return errors.New("auth: enrollment record not found")
 	}
+	if !r.ConsumedAt.IsZero() {
+		return errors.New("auth: enrollment already consumed")
+	}
 	r.ConsumedAt = at
 	s.recs[nodeID] = r
 	return nil
@@ -75,6 +84,9 @@ func Fingerprint(der []byte) string {
 // Consume validates and atomically burns a one-time record.
 // Errors: unknown node, expired, already consumed, fingerprint/nonce mismatch.
 func Consume(store EnrollmentStore, nodeID, fingerprint, nonce string, now time.Time) error {
+	if nodeID == "" || fingerprint == "" || nonce == "" {
+		return errors.New("auth: enrollment proof must be non-empty")
+	}
 	rec, ok := store.Get(nodeID)
 	if !ok {
 		return fmt.Errorf("auth: enrollment unknown node %q", nodeID)
