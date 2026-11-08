@@ -72,13 +72,16 @@ func TestWorkloadDeterministic(t *testing.T) {
 // WorkloadMetrics summarizes one burst run.
 type WorkloadMetrics struct {
 	QuorumWriteAvgMs float64
-	RenreadsPct      float64
+	RereadsPct       float64
 	OpsPerSec        float64
 	LockContention   float64
 	CacheHitsPct     float64
 }
 
 // benchmarkQuorumWrite measures bytes/op, durability, and checksum throughput.
+// Fresh payload per iteration: reusing one payload makes iterations 2..N a
+// Pebble Get dedup hit (few µs), inflating throughput by ~100x and hiding the
+// fsync path. A counter + random prefix forces the real Put/fsync path.
 func BenchmarkWorkloadQuorumWrite(b *testing.B) {
 	// prepared driver: 3 stores
 	fsm := metadata.New()
@@ -91,15 +94,24 @@ func BenchmarkWorkloadQuorumWrite(b *testing.B) {
 		stores[uint64(i)] = s
 	}
 	coord := volume.NewCoordinator(fsm, stores)
-	payload := bytes.Repeat([]byte("syncfs-bench-"), 296)
+	base := bytes.Repeat([]byte("syncfs-bench-"), 296) // ≈ 4 KiB
 
 	b.ReportMetric(0, "ops") // placeholder for clarity; ReportAll returned below
+	b.ResetTimer()
 	start := time.Now()
 	b.N = 1000
 	med := make([]float64, 0, b.N)
 	for i := 0; i < b.N; i++ {
+		payload := append([]byte(nil), base...)
+		// Fresh bytes per iteration (counter in first 8 bytes + suffix).
+		payload[0] = byte(i >> 24)
+		payload[1] = byte(i >> 16)
+		payload[2] = byte(i >> 8)
+		payload[3] = byte(i)
 		t0 := time.Now()
-		_, _ = coord.WriteChunks(b.Context(), [][]byte{payload})
+		if _, err := coord.WriteChunks(b.Context(), [][]byte{payload}); err != nil {
+			b.Fatalf("quorum write %d: %v", i, err)
+		}
 		med = append(med, float64(time.Since(t0).Microseconds())/1000)
 	}
 	total := float64(time.Since(start).Seconds())
@@ -107,6 +119,12 @@ func BenchmarkWorkloadQuorumWrite(b *testing.B) {
 	b.ReportMetric(ops, "ops/s")
 	sortF(med)
 	b.ReportMetric(med[len(med)/2], "ms-p50")
+	// p99 (index 99 % of sorted latencies).
+	p99 := med[len(med)*99/100]
+	if len(med) > 0 && len(med)*99/100 >= len(med) {
+		p99 = med[len(med)-1]
+	}
+	b.ReportMetric(p99, "ms-p99")
 	b.ReportMetric(med[len(med)-1], "ms-max")
 }
 
