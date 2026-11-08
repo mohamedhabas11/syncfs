@@ -1,10 +1,9 @@
 # Known limitations
 
-Honest register. Nothing on this list is silently dropped. Items 7–14 come
+Honest register. Nothing on this list is silently dropped. Items 7–13 come
 from the adversarial audit in `research/01-critic-findings.md` +
-`research/02-tester-evidence.md` (2026-11-08); the checked-in suite is green
-without the attacker harness, but the listed durability/consensus caveats
-remain until fixed and re-tested.
+`research/02-tester-evidence.md` (2026-11-08); audit fixes are listed where
+landed, with residual caveats where they remain.
 
 | # | Limitation | Impact | Recovery / path |
 | --- | --- | --- | --- |
@@ -14,13 +13,12 @@ remain until fixed and re-tested.
 | 4 | offline writes | unavailable | designed out (strict volume) |
 | 5 | target-app qualification | deferred to M5 (ADR-0001) | needs reference hardware + chosen target app |
 | 6 | persisted metadata index beyond Raft | in-memory scaffold | coordinator lands with M5; FUSE syncer seam implemented but production coordinator wiring pending |
-| 7 | WAL snapshot restore + compaction durability | restarted node loses ConfState; `Compact` not durable | manual: re-bootstrap node from verified snapshot; do not rely on `Compact` until fixed |
-| 8 | WAL gap poisoning + middle corruption | rejected gap write bricks reopen; middle corruption silently truncates | manual: quarantine node, rebuild WAL from quorum snapshot |
-| 9 | metadata inode-ID determinism | `crypto/rand` IDs diverge across replicas | manual: coordinated rebuild; fix is deterministic ID from `(OpID, parent, name)` (not yet applied) |
-| 10 | metadata parent panics | missing-parent Link/Rename panics follower apply | manual: restore follower from snapshot; fix adds parent checks (not yet in metadata) |
-| 11 | chunkstore middle corruption + dedup receipt | earlier-record corruption drops later durable chunks; dedup returns receipt for corrupt bytes | manual: scrub + repair from majority; do not trust receipts until verified |
-| 12 | enrollment double-spend + role enforcement | concurrent consume can succeed twice; client cert may present on raft port | manual: rotate enrollment nonces; transport must enforce `VerifyConnection` role (not yet wired) |
-| 13 | volume coordinator atomicity | failed batch leaves orphan chunk; no sentinel `ErrNoQuorum`; ignores cancelled ctx | manual: run conservative GC sweep to reclaim orphans |
-| 14 | benchmark qualification gap | numbers are in-process only (no QUIC/FUSE/10 GbE) | run §11 gates on reference hardware — see `docs/benchmarks/README.md` |
+| 7 | WAL snapshot + compaction | FIXED for restore/gap (snapshot restored on reopen; gap validated before write; mid-log corruption fails closed). `Compact` still refuses beyond snapshot (durable compaction pending). | manual: re-bootstrap node from verified snapshot; do not rely on `Compact` until durable |
+| 8 | metadata determinism + parents | FIXED (deterministic SHA256 IDs from `(OpID, parent, name)`; parent checks in Link/Rename; Rename no-overwrite; Truncate cap; bare-xattr reject; LinkCount zombie-free) | — |
+| 9 | chunkstore corruption + dedup | FIXED for mid-pack skip + dedup verify (+ bounds + nil-pack guards). `TestTornWriteRecovered` still tolerates torn tail as `ErrCorrupt` (quarantine is skip, not forensic copy). | manual: scrub + repair from majority |
+| 10 | enrollment + role enforcement | PARTIAL (empty-proof rejected, `MarkConsumed` guards double-consume; `Consume` Get-then-Mark TOCTOU remains; `VerifyConnection` role mapping still the transport contract to enforce per-stream) | manual: rotate enrollment nonces; enforce per-stream roles |
+| 11 | volume coordinator | FIXED for sentinel/ctx/batch (wraps `ErrNoQuorum`; honors `ctx`; pre-validates batch; monotonic RaftIndex) | orphan sweep via GC remains the safety net |
+| 12 | transport framing | FIXED for zero-length + per-class caps + single-Writer lock | — |
+| 13 | benchmark qualification gap | numbers are in-process only (no QUIC/FUSE/10 GbE) | run §11 gates on reference hardware — see `docs/benchmarks/README.md` |
 
 Rule: nothing here is a compatibility or performance certification.

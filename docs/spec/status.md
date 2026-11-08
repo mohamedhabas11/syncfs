@@ -7,13 +7,13 @@ Honest per-milestone state. Allowed: NOT_STARTED | PARTIAL | DONE | DEFERRED | B
 | Phase 0 foundation | DONE | `research/00-synthesis-phase0-closure.md`, D-001 (`.spec/decisions.md`) |
 | M1-01 Go baseline | DONE | `go mod verify` — "all modules verified" (788f7af) |
 | M1-02 api/v1 schemas | DONE | `buf lint` clean, `buf breaking` clean, `go test ./api/...` PASS (9c35f54) |
-| M1-03 auth/PKI | DONE | `go test ./internal/auth/... -race` PASS (2a7804c); caveats in `docs/known-limitations.md` #12 |
-| M1-04 QUIC transport | DONE | `go test ./internal/transport/... -race` PASS (720ff6d) |
-| M2-01 WAL/snapshot | DONE | `go test ./internal/raftstore/... -race` PASS (2645e09); caveats #7–#8 |
-| M2-02 chunkstore | DONE | `go test ./internal/chunkstore/... -race` PASS (7a261f7); caveats #11 |
-| M2-03 metadata | DONE | `go test ./internal/metadata/... -race` PASS (1403df6); caveats #9–#10 |
+| M1-03 auth/PKI | DONE | `go test ./internal/auth/... -race` PASS (2a7804c); partial caveats in `docs/known-limitations.md` #10 |
+| M1-04 QUIC transport | DONE | `go test ./internal/transport/... -race` PASS (720ff6d); framing fix #12 |
+| M2-01 WAL/snapshot | DONE | `go test ./internal/raftstore/... -race` PASS (2645e09); restore/gap fixed #7 |
+| M2-02 chunkstore | DONE | `go test ./internal/chunkstore/... -race` PASS (7a261f7); corruption/dedup fixed #9 |
+| M2-03 metadata | DONE | `go test ./internal/metadata/... -race` PASS (1403df6); determinism/parents fixed #8 |
 | M2-04 raft driver | DONE | `go test ./internal/raftstore/... -race` PASS incl. 3-node mesh (c89af8c) |
-| M2-05 quorum writes | DONE | `go test ./internal/volume/... -race` PASS (9ae7f7b); caveats #13 |
+| M2-05 quorum writes | DONE | `go test ./internal/volume/... -race` PASS (9ae7f7b); sentinel/ctx/batch fixed #11 |
 | M2-06 leases/locks/cache | DONE | `go test ./... -race` PASS (c8fc0eb) + locks fix (ecb37e7): `TestFamilySeparationIsTotal`, `TestSameOwnerNeverSelfBlocks`, `TestBlockingGrantAcquiresAfterRelease`, `TestBindProtoCarriesInodeAndRange` |
 | M3-01 FUSE skeleton | DONE | `TestFUSEmountSmoke` PASS in container (eba1e4e; completion 1800055: `TestStrictTimeoutsZero`, `TestCallerCredentialsEnforcedInLookup`, `TestWriteFileFailsClosedOnSyncerError`, `TestOpenReleaseFsyncLifecycle`, `TestErrnoTable` PASS) |
 | M3-02 POSIX compat | DONE | `TestCompatProfileSurface` + `TestHardLinkSymlinkFsyncDir` PASS (82c4761; additions 1800055); matrix `docs/posix-compat.md` |
