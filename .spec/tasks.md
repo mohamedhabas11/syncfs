@@ -140,16 +140,16 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/...` green in the container fleet (lease grant/revoke/ack/expiry, wait-clear bounds, locks try/conflict/session expiry, cache lease-guarded put).
 
-- [ ] **M3-01 — Implement the strict FUSE mount skeleton**: Mount a volume on
+- [x] **M3-01 — Implement the strict FUSE mount skeleton**: Mount a volume on
   Linux with direct-I/O mutable handles, zero/short metadata cache TTLs, caller
   credentials, lifecycle handling, and exact Linux errno mapping.
-  - **Phase**: M3 / blocked by M2-05 and M2-06.
-  - **Files**: internal/fusefs/*, cmd/syncfs/mount.go,
-    internal/fusefs/*_linux_test.go.
+  - **Phase**: M3 / done (2026-11-08).
+  - **Files**: internal/fusefs/*, cmd/syncfs/mount.go (deferred to CLI M4-03 for
+    the binary; library mount path lands here), internal/fusefs/*_linux_test.go.
   - **Tracker**: This repository.
-  - **Dependencies**: M2-05, M2-06; Linux FUSE CI runner.
+  - **Dependencies**: M2-05, M2-06 (done).
   - **Parallel**: No.
-  - **Verification**: go test -run TestFUSE -count=1 ./internal/fusefs/....
+  - **Verification**: `go test -run TestFUSE ./internal/fusefs/...` green in the container fleet (kernel-mount smoke, strict posture, errno table).
 
 - [ ] **M3-02 — Complete the compatibility profile**: Implement and test
   create/open/read/write/truncate/append, directories, hard/symlinks, rename,
