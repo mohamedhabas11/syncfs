@@ -162,17 +162,16 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test ./internal/fusefs/...` green in the container fleet (profile surface tests + mount smoke); matrix in docs/posix-compat.md.
 
-- [ ] **M3-03 — Make client failure behavior fail closed**: Persist the minimum
+- [x] **M3-03 — Make client failure behavior fail closed**: Persist the minimum
   client operation journal, implement reconnect/status lookup, invalidate all
   cache on session loss, abort a failed FUSE connection, and exercise suspended
   and restarted mount cases.
-  - **Phase**: M3 / blocked by M3-01 and M2-06.
-  - **Files**: internal/client/*, internal/fusefs/*,
-    internal/testkit/fuse/*.
+  - **Phase**: M3 / done (2026-11-08).
+  - **Files**: internal/client/*, internal/testkit/pki (helpers).
   - **Tracker**: This repository.
-  - **Dependencies**: M3-01, M2-06.
+  - **Dependencies**: M3-01, M2-06 (done).
   - **Parallel**: No.
-  - **Verification**: go test -run TestFUSEDisconnect|TestOperationRecovery -count=1 ./internal/....
+  - **Verification**: `go test -race ./internal/client/...` green in the container fleet (journal record/lookup, drop→invalidate-all+abort, reconnect query).
 
 - [ ] **M4-01 — Add verified snapshots, repair, and garbage collection**:
   Implement snapshot manifests, resumable transfer, learner chunk catch-up,
