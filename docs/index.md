@@ -1,5 +1,7 @@
 # SyncFS
 
+![status](https://img.shields.io/badge/status-pre--1.0-orange)
+
 Linux-only replicated POSIX shared-directory service for small high-availability
 deployments (3 storage nodes, low-latency LAN).
 

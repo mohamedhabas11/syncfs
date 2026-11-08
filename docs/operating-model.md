@@ -16,9 +16,8 @@ network path that routinely partitions is not HA.
 
 ## Bootstrap and volume lifecycle
 
-The operator-facing CLI names below are the operator experience planned for
-the control plane (the `cmd/syncfs` skeleton exists; see
-`docs/reference/cli.md` for what is stubbed today):
+The operator-facing CLI is validated in `cmd/syncfs` (see
+`docs/reference/cli.md` for exact flags and exit codes):
 
 ```text
 # On an offline administrator workstation
@@ -26,15 +25,15 @@ syncfs admin pki init --cluster-id <uuid>
 syncfs admin pki issue-node --node-id node-a
 
 # On the first storage node
-syncfs daemon init --config /etc/syncfs/node.yaml
-syncfs admin cluster bootstrap --seed node-a
+syncfs daemon --config /etc/syncfs/node.yaml
+syncfs admin bootstrap --cluster-id <uuid> --out /etc/syncfs/cluster.yaml
 
 # Add node-b and node-c as learners, then promote each after verification
-syncfs admin member enroll --bundle node-b.join
-syncfs admin member promote --node node-b
+syncfs admin member --node node-b --op add-learner
+syncfs admin member --node node-b --op promote
 
 # Create a strict shared directory and mount it on an application host
-syncfs admin volume apply --file jira-shared-home.yaml
+syncfs admin volume --volume jira-shared-home --op status
 syncfs mount --volume jira-shared-home --target /srv/jira/shared-home
 ```
 

@@ -31,5 +31,16 @@ nav:
   - Known limitations: known-limitations.md
   - Status: spec/status.md
   - Security: security.md
+  - ADRs:
+    - Index: adr/index.md
+    - 0001 M5 deferral: adr/0001-defer-m5-qualification.md
+    - 0002 M3-01 completion: adr/0002-m3-01-strict-mount-completion.md
+    - 0003 Joint promotion: adr/0003-joint-promotion-durable-journal-cli.md
+  - Benchmarks:
+    - Methodology: benchmarks/README.md
+  - Releases:
+    - v0.1.0: releases/v0.1.0.md
   - Reference:
     - CLI and config: reference/cli.md
+    - Config: reference/config.md
+    - API/proto: reference/api.md

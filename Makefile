@@ -2,10 +2,10 @@ GO ?= go
 GOFLAGS ?=
 BUF_BASIS := api/baseline
 
-.PHONY: proto-lint proto-breaking proto-gen test vet lint build clean mod-verify fleet-test help
+.PHONY: proto-lint proto-breaking proto-gen test vet lint build clean mod-verify fleet-test docs-gen docs-build help
 
 help:
-	@echo "targets: proto-lint proto-breaking proto-gen test vet lint build clean mod-verify fleet-test"
+	@echo "targets: proto-lint proto-breaking proto-gen test vet lint build clean mod-verify fleet-test docs-gen docs-build"
 
 mod-verify:
 	$(GO) mod verify
@@ -38,6 +38,14 @@ lint:
 
 build:
 	$(GO) build ./...
+
+docs-gen:
+	# Reference docs are hand-written from the code (see docs/reference/api.md).
+	# This target is the single regeneration entry point for future generators.
+	@echo "docs-gen: reference/api.md table regenerated manually from api/v1/*.proto (buf generate)"
+
+docs-build:
+	mkdocs build --strict
 
 clean:
 	$(GO) clean -cache -testcache 2>/dev/null || true
