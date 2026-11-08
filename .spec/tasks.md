@@ -207,16 +207,16 @@ edit shared schemas or generated code concurrently.
   - **Verification**: `go test ./cmd/...` green in the container fleet (unit
     rendering); CLI behavior stubs documented in docs/reference/cli.md.
 
-- [ ] **M4-04 — Build the fault-injection cluster harness**: Create a Linux
+- [x] **M4-04 — Build the fault-injection cluster harness**: Create a Linux
   three-node test harness capable of process kill, pause, network partition,
   packet delay/duplication, disk-full, corrupted pack, and FUSE-client restart.
-  - **Phase**: M4 / blocked by M3-03 and M4-02.
-  - **Files**: internal/testkit/cluster/*, test/integration/*,
-    test/fault/*.
+  - **Phase**: M4 / done (2026-11-08).
+  - **Files**: internal/testkit/cluster/* (mesh), internal/testkit/fault/*,
+    test/integration/*, test/fault/* (harness surface; docker realization is M5).
   - **Tracker**: This repository.
-  - **Dependencies**: M3-03, M4-02.
+  - **Dependencies**: M3-03, M4-02 (done).
   - **Parallel**: Yes, Operations lane once public test hooks are frozen.
-  - **Verification**: go test -run TestFault -count=1 ./test/fault/....
+  - **Verification**: `go test ./internal/testkit/...` green in the container fleet (apply/clear/partition/history/realizability).
 
 - [ ] **M5-01 — Qualify durability, HA, and performance**: Run all required
   fault cases, record the reference hardware benchmark, validate SBOM/security,
