@@ -1,24 +1,16 @@
+> **ARCHIVED (2026-11-08) — superseded as MVP architecture by decision D-001 (research/07-design-fork-reconciliation.md §3.5).** The watcher + pull-based data plane below is superseded. MVP architecture is the FUSE-mounted strict volume (.spec/technical_spec.md §§5, 8). Retained as reference for post-MVP tiers only. Do not implement MVP scope from this file.
+
 # Architecture Proposal — Directory Replication Daemon
 
-> **Superseded exploratory draft.** This document describes a watcher-based
-> native-directory replication daemon. That model cannot provide the shared
-> POSIX consistency, cache coherency, or quorum durability now required by this
-> project. It is retained for history only; implement against
-> [`.spec/technical_spec.md`](../.spec/technical_spec.md) and
-> [`docs/architecture.md`](../docs/architecture.md).
-
-**Status:** Draft (architecture phase)
+**Status:** Draft (architecture phase; updated with consensus decision)
 **Companion to:** `.spec/directory-replication-daemon.md`
-
-Derived from the design spec now that the spec phase is considered laid out. This is deliverable #1 of the pre-code checklist.
 
 ## 1. Context
 
 - Single Go daemon, single binary, config-driven, Linux only, no Kubernetes.
 - Replicates declared local directories across 2–3+ nodes on ordinary mounted filesystems (ext4/XFS).
-- Native filesystem only; no custom FS, block layer, or object storage.
-- Local state (change journal, peer state) in an embedded store, not an external database.
-- Local file operations never block on remote nodes unless the directory's policy requires it.
+- Native filesystem only; no custom FS / block / object storage; no external DB; embedded private state allowed (Raft log + stable store); state dir outside managed dirs.
+- Same binary everywhere, no dedicated server role, pull-based data plane; leader elected.
 
 ## 2. Component overview
 
@@ -27,21 +19,21 @@ Derived from the design spec now that the spec phase is considered laid out. Thi
 | Config | Loads and validates YAML directory declarations. |
 | Watcher | Change detection (inotify/fanotify + periodic reconcile scan). |
 | Ingest | Local move/copy into pool + journaling. |
-| Journal | Embedded local store: change records and committed position. |
-| Transport | Async replication of committed changes to peers, policy-driven. |
-| Lease manager | Quorum lease grant/renew/revoke with fencing tokens. |
-| Election | Leader election among healthy candidates. |
+| Raft group | Consensus: `hashicorp/raft`; single group, cluster-wide; per-directory leases as state-machine data. |
+| Transport | Pull-based: followers pull committed changes from leader's journal. |
+| Lease manager | Quorum lease grant/renew/revoke; fencing token = per-directory log index of lease-grant entry; self-fencing via leader lease timeout → leadership channel → fence. |
+| Election | Leader election (via Raft); operator override possible. |
 | Conflict resolver | Reconcile on rejoin (bidirectional mode). |
-| Safety | HALTED detection, quarantine handling, mass-delete guard. |
+| Safety | HALTED detection, quarantine handling, mass-delete guard; app-level read-only fence (EBUSY fallback); ExecStopPost best-effort. |
 
 ## 3. Write path
 
 ```
-app write → local native FS → watcher → ingest → journal commit (advances committed position) → transport → peer
+app write → local native FS → watcher → ingest → Raft (log + commit; per-directory lease entries) → transport (pull) → peer
 ```
 
 - Single-writer / lease modes restrict who may write before the path is entered.
-- Journal commit defines the committed position; transport ships committed changes asynchronously.
+- Raft commit defines the committed position; transport ships committed changes asynchronously (pull-based).
 - Local operations never block on remote nodes unless the directory's mode/policy requires it.
 
 ## 4. Read path
@@ -52,35 +44,50 @@ app write → local native FS → watcher → ingest → journal commit (advance
 
 ## 5. Failure handling
 
-- Node states (LEADER / FOLLOWER / FENCED / CANDIDATE / CATCHING_UP / QUARANTINED / HALTED) map directly onto component behaviour (lease expiry, election, quarantine, safety checks).
-- Failure scenarios (leader crash, partitions, watcher loss, daemon hang) are handled via the mechanisms in the spec: lease TTL + self-fencing, ExecStopPost remount, watchdog, quarantine.
+- Node states (LEADER / FOLLOWER / FENCED / CANDIDATE / CATCHING_UP / QUARANTINED / HALTED) map onto component behaviour (lease expiry, election, quarantine, safety checks).
+- Self-fencing: leader lease timeout → leadership channel → fence (RO, stop writes). `ExecStopPost` best-effort; `remount,ro` EBUSY caveat; crash-vs-hang distinction; fast restart within lease TTL resumes via journal replay; fencing required only when the node can't prove a valid lease before the safety margin expires.
 
-## 6. Mode wiring
+## 6. Consensus layer (decided: HashiCorp Raft)
+
+- Adopt `hashicorp/raft`.
+- Single Raft group, cluster-wide; per-directory leases as state-machine data.
+
+**Mapping:**
+
+- Voters / witness / learners:
+  - Witness: voter whose log holds only small metadata; file data never goes through Raft.
+  - Remote/geographic nodes: join as non-voters (`AddNonvoter`) and follow asynchronously.
+- Self-fencing: leader lease timeout → step down if quorum unreachable → notify via leadership channel → trigger fence (RO, stop writes).
+- Fencing token: per-directory log index of lease-grant entry = epoch; Raft term is cluster-wide; per-directory token is right granularity; replicas reject older.
+
+**Library provides:** leader election, WAL, log replication, leader lease timeout, leadership-channel notification.
+
+**Library does not provide:** app-level read-only fence (EBUSY fallback); catch-up/quarantine/conflicts/POSIX apply; operator recovery (manual).
+
+## 7. Mode wiring
 
 - **One-way async:** primary designation + replica change stream; manual promotion bumps epoch; divergent returning primary → quarantine.
-- **Bidirectional async:** all nodes accept writes; rejoin uses per-file version vectors; conflicts become policy-named conflict copies; delete-vs-edit resolves to keeping the edit; mass-delete breaker active.
+- **Bidirectional async:** all nodes accept writes; rejoin uses per-file version vectors; conflicts become policy-named conflict copies; delete-vs-edit keeps the edit; mass-delete breaker active.
 - **Single-writer lease:** quorum-granted lease with fencing; only lease holder writes; others read-only.
 
-## 7. Constraints conformance
+## 8. Constraints conformance
 
 - Single Go binary ✅
 - No Kubernetes dependency ✅
 - Native filesystem, no custom FS / block / object storage ✅
-- Embedded store, not external DB ✅
+- No external DB; embedded Raft log + stable store in private state dir ✅
 - Local ops don't block unless policy requires ✅
+- Same binary everywhere, no dedicated server, pull-based data plane ✅
 
-## 8. Open architecture questions
+## 9. Open architecture questions
 
-1. Change detection: fanotify vs inotify + periodic reconcile scan (open spec Q1).
-2. Journal format and embedded store backend.
-3. Transport mechanism between nodes (local IPC? TCP?).
-4. Batching / backpressure (open spec Q2).
+1. Change detection: fanotify vs inotify + periodic reconcile scan — decided approach: inotify + periodic scan (spec open Q1).
+2. Journal format and embedded store backend — now: Raft log + BoltDB stable store (hashicorp/raft).
+3. Transport mechanism — pull-based from leader's journal (to be wired).
+4. Batching / backpressure — spec open Q2.
 5. Quarantine layout: `.dirsync/quarantine/epoch-N/`.
-6. Checksum / integrity verification (open spec Q8).
+6. Checksum / integrity — spec open Q8.
 
-## 9. Next steps
+## 10. Next steps
 
-- Mode comparison spec sheet.
-- Failure-state model spec sheet.
-- Go package layout sketch.
-- Replication protocol sketch (change journal, committed position, epoch checks).
+- Mode comparison, failure-state model, Go package layout, MVP plan with explicit exclusions.

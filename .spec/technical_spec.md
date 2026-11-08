@@ -1,5 +1,7 @@
 # Technical Spec: SyncFS MVP
 
+> **Reconciled (2026-11-08, research/07-design-fork-reconciliation.md §3.5):** This spec is the unified MVP baseline (Camp A data path + Camp B operability/state/POSIX-apply folded in). Camp B's native-dir watcher data path, hashicorp/raft MVP selection, pull-based steady-state transport, per-directory epoch fencing token, and per-directory async modes are deferred/superseded — see §5 of that document and the Phase-0 decision log entry D-001.
+
 Status: Foundation contract
 Date: 2026-11-08
 Tracker repository: /Users/mohamed/syncfs
@@ -134,11 +136,11 @@ same model without sharing their ordered mutation log.
 
 | Need | Selected baseline | Rationale |
 | --- | --- | --- |
-| Language/runtime | Go 1.25+ on Linux | Matches existing design direction; modern Go is required by current QUIC dependencies. |
+| Language/runtime | Go 1.26+ on Linux (quic-go ≥ v0.62) | Matches existing design direction; current quic-go (master go.mod `go 1.26.0`, FIPS mode from v0.60) requires Go 1.26. M1-01 pins Go + quic-go versions together; Go 1.25 is kept only with a quic-go release that supports it. |
 | FUSE adapter | github.com/hanwen/go-fuse/v2 | Go-native FUSE protocol coverage, lock forwarding, explicit cache controls, and direct Linux focus. |
 | Consensus core | go.etcd.io/etcd/raft/v3 | Mature deterministic Raft core; SyncFS retains control over persistence and encrypted transport. |
 | Transport | github.com/quic-go/quic-go plus Go TLS | Multiplexed streams with TLS 1.3 protection and no TCP head-of-line coupling. |
-| Metadata/index projection | github.com/cockroachdb/pebble | Embedded ordered KV for replicated metadata and chunk indexes; not an external authority. |
+| Metadata/index projection | github.com/cockroachdb/pebble | Embedded ordered KV (LSM: memtable→L0–L6, compaction) for replicated metadata and chunk indexes; not an external authority. Rationale: Pebble's LSM write path beats bbolt (single-file B+tree, single-writer) and badger (LSM value-log) for this workload at CockroachDB scale; every Pebble write that must survive crash uses `WriteOptions.Sync` (Sync policy is a REQUIRED spec detail for M2-02, not an implementation choice). |
 | Wire encoding | Protobuf, source in api/v1 | Versioned schemas, bounded messages, generated Go code, and testable compatibility. |
 | Chunk digest | BLAKE3 | Fast content addressing and corruption detection; QUIC/TLS remains the transport integrity/authentication layer. |
 
@@ -205,8 +207,8 @@ type Inode struct {
     MtimeNs     int64
     CtimeNs     int64
     ManifestID  ChunkID // file only
-    SymlinkData []byte  // symlink only, bounded by Linux PATH_MAX
-    Xattrs      map[string][]byte
+    SymlinkData []byte  // symlink only, bounded by Linux PATH_MAX (4096 byte target limit; st_size=strlen)
+    Xattrs      map[string][]byte // user.* + security.* ACL names only; "system.*" / trusted namespaces MUST fail explicitly. ACL MUST be representable as ListXattr-readable entries (map[string] is insufficient for full ACL entries — M2-03 MUST define the encoding; research/02-fuse-posix.md G-5) // corrected 2026-11-08
 }
 
 type Extent struct {
@@ -263,23 +265,22 @@ none. Preconditions prevent accidental lost updates.
 ~~~
 
 All paths are daemon-private. WAL records, snapshots, packs, and Pebble state
-include a format version, length bounds, and checksums. Recovery never accepts a
+include a format version, length bounds, and checksums. Pack record format: `[length][BLAKE3-256(chunk)][data][fsync-mark]` — every pack append is followed by `fdatasync` of the pack file AND `fsync` of the containing directory (file durability ≠ name durability; `fsyncdir` per-parent quorum is required for rename/create, `Datasync` flag distinguishes fdatasync, and `Flush ≠ Fsync ≠ Release` in the FUSE adapter — research/02-fuse-posix.md G-4). Recovery never accepts a
 truncated valid-prefix record as a committed command unless the Raft hard state
-proves it was persisted.
+proves it was persisted. Chunk dedup race (two writers writing the same `ChunkID` concurrently): the leader OWNS chunk-index insertion; followers use idempotent insert of identical-bytes content (same hash, divergent offsets are safe).
 
 ## 8. Protocol and transaction lifecycle
 
 ### 8.1 Connection rules
 
-- The ALPN value is syncfs/1.
-- Every QUIC endpoint presents a certificate chained to the cluster CA.
-- Certificates contain the expected cluster identity and node/client role.
+- The ALPN value is syncfs/1. Both endpoints set `NextProtos = ["syncfs/1"]` exactly; mismatched ALPN fails handshake, no fallback.
+- Every QUIC endpoint presents a certificate chained to the cluster CA. Servers use `RequireAndVerifyClientCert` with a private `ClientCAs` pool; clients use the cluster CA as `RootCAs`. TLS 1.3 only: reject ≤1.2 (RFC 9001 §4.2).
+- Certificate identity is exactly one URI SAN of the form `spiffe://syncfs.cluster/<cluster-id>/node/<node-id>` or `.../client/<id>` or `.../admin/<id>` (SPIFFE X.509-SVID profile, RFC 5280 §4.2.1.6); validators MUST reject certs with zero or multiple URI SANs. Role validation uses `VerifyConnection`, not `VerifyPeerCertificate` alone, because the latter is skipped on resumed connections (RFC 9001 §4.5). Resumption is allowed; 0-RTT data stays disabled.
 - Every request includes cluster ID, protocol version, authenticated principal,
   and a bounded request ID.
 - 0-RTT application data is disabled. A reconnect must complete authentication
   before reads, lease renewal, or mutations.
-- Streams are classed as raft, control, client, chunk, and snapshot; the
-  transport reserves capacity for Raft and lease revocation traffic.
+- Streams are classed as raft, control, client, chunk, and snapshot. QUIC provides no wire priority (RFC 9000 §2.3); "reservation" is a local scheduler policy: `SetPriority(urgency 0, incremental false)` for raft/lease streams and low urgency for chunk streams (quic-go ≥ v0.62, RFC 9218 shape), per-class stream-count quotas enforced in `internal/transport`, and a dedicated raft/control QUIC connection as the documented SLO path (§11). Connection-level congestion still couples streams on one connection (RFC 9002).
 - Protobuf length prefixes have strict maximum sizes. Chunk bytes travel on
   dedicated chunk streams; they are never inserted into a Raft entry.
 
@@ -315,9 +316,9 @@ one command even when it changes two parent directories.
 
 An interrupted request has three legal outcomes: known committed, known rejected,
 or unknown. The client asks GetOperation(OperationID) before retrying. If a
-leader cannot prove the outcome before the request deadline, FUSE receives an
-I/O error and the operator can inspect the operation ID; the client MUST NOT
-manufacture a second mutation.
+leader cannot prove the outcome before the request deadline (configurable `SyncFS.RequestDeadline`, default 5s; the deadline owner is the FUSE client, not the leader), FUSE receives an
+`EIO` error and the operator can inspect the operation ID; the client MUST NOT
+manufacture a second mutation. The leader's operation-result record is bounded to N=10,000 entries / 10 minutes (configurable `SyncFS.OpResultRetention`; eviction of a retained result for a still-retrying client is a documented failure mode — client MUST surface `EIO` and reconcile, never re-execute as a fresh operation — research/05-protocol-perf.md G1).
 
 ### 8.3 Read, cache, and lock protocol
 
@@ -326,8 +327,7 @@ The strict mount has two cache layers:
 - A userspace cache in syncfs mount, keyed by inode and version and guarded by
   a server-issued lease.
 - Minimal kernel FUSE caching with zero/very short metadata TTL and direct I/O
-  for mutable file data in the initial release. This prevents a paused or
-  disconnected mount process from allowing the kernel to serve an expired page.
+  for mutable file data in the initial release (`FOPEN_DIRECT_IO` per-`Open` in go-fuse; `EnableWritebackCache` stays OFF in strict mode). Negative dentries, symlink/ACL/readdir sub-caches, and `Forget` handling MUST be named in M3-01 (go-fuse defaults are 1s-unsafe). A suspended (not killed) mount process can strand kernel pages: the guaranteed behavior is *block-not-serve* (plus `fusectl` abort → `ENOTCONN` for pending requests; `mmap` pages are the documented exception) via `INC_EPOCH`/`PruneNotify` invalidation (research/02-fuse-posix.md G-2/G-3).
 
 A leader grants a ReadLease only to a healthy connected client session and
 records the inode/directory generation. Before a conflicting command commits,
@@ -337,43 +337,40 @@ If a control connection drops, the mount invalidates all leases before serving
 another request. Read-only cached chunks may be reused only after revalidating
 the inode generation.
 
-Fresh reads use a Raft ReadIndex barrier or a valid leader-confirmed lease.
-Followers may proxy requests, but do not independently invent cache authority.
+Fresh reads use a Raft ReadIndex barrier with `ReadOnlySafe` set (pin in M2-06; `ReadOnlyLeaseBased` MUST NOT be used for strict reads without the clock caveat being designed out) or a valid leader-confirmed lease. Three distinct leases MUST NOT be conflated: (a) Raft leader lease (ReadIndex clock caveat), (b) client ReadLease (userspace cache authority), (c) POSIX lock lease (state-machine record). Followers may proxy requests, but do not independently invent cache authority.
 The implementation must test host suspension and mount-process death; strict
 correctness wins over an unsafe kernel page-cache optimization.
 
-flock and POSIX range locks are state-machine records keyed by inode, owner
-session, process lock owner, range, and lock mode. Blocking locks wait on the
-leader; nonblocking locks return EAGAIN. Session expiry releases its locks in
-Raft order and emits invalidations.
+flock, POSIX fcntl byte-range locks, and OFD locks are three distinct families and MUST NOT be conflated into one key (research/02-fuse-posix.md G-1): flock is per-open-file-description; fcntl locks are per-process (closing any fd of the process releases them — the classic quirk); OFD locks are per-OFD with distinct inheritance. All are state-machine records keyed by inode, owner session, lock family, owner key, range, and lock mode, carrying Raft order; the FUSE adapter forwards each family with its own semantics (go-fuse lock forwarding), including upgrade/downgrade, split/coalesce, and open-mode gating. Blocking locks wait on the leader with fair wait-queues; deadlock detection (`EDEADLK`) is a V1 leader requirement (M2-06); nonblocking locks return EAGAIN. Session expiry releases its locks in
+Raft order and emits invalidations; crash ordering (lease expiry vs lock release vs snapshot inclusion) is specified in M2-06, not left as "session expiry."
 
 ### 8.4 Raft persistence and leadership
 
-The Raft driver uses Ready/Advance semantics:
+The Raft driver uses Ready/Advance semantics (etcd/raft/v3 deterministic core; network + disk IO owned by SyncFS):
 
 1. Persist WAL entries and hard state with fdatasync before transmitting the
    associated Raft messages.
 2. Persist snapshots before reporting them applied.
 3. Deliver committed entries to the state machine in index order only after all
    referenced chunks are locally verified.
-4. Advance Raft only after persistence and apply obligations are complete.
+4. Advance Raft after WAL/snapshot persistence is complete. Apply MAY proceed asynchronously in index order; the driver MUST NOT block Heartbeat/AppendEntries on state-machine apply (otherwise apply lag starves quorum heartbeats — research/01-consensus-raft.md G-1).
 
-A node with a WAL, snapshot, metadata, or chunk gap is CATCHING_UP and cannot
-campaign or vote. Raft's committed term/index is the fencing token; no external
+The etcd Config MUST set: `PreVote: true`, `CheckQuorum: true`, bounded `MaxUncommittedEntriesSize`, `TickMs`/`ElectionTick`/`HeartbeatTick` values chosen for LAN quorum (exact numbers in M1-04; rationale: consensus agent R-1). A node with a WAL, snapshot, metadata, or chunk gap is CATCHING_UP and cannot
+campaign or vote — except a promoted-but-unapplied voter MUST still vote (vote grant is index/term-only; chunk gating applies to campaign and apply, not to vote grant, otherwise the chunk-gap deadlock in research/01-consensus-raft.md G-2 can brick the cluster). Raft's committed term/index is the fencing token; no external
 lease manager or writable direct brick exists to fence.
 
 ### 8.5 Snapshot, repair, and garbage collection
 
 A snapshot consists of a checksummed metadata checkpoint, the applied Raft
-index/term, and a manifest of reachable chunks. The receiver installs it into a
+index/term, and a manifest of reachable chunks. Snapshot envelope carries explicit format version, applied index/term, cluster/volume ID, and SHA-256/BLAKE3 checksum; transfer is resumable by manifest and verified hash-by-hash before atomic activation (receiver installs into a
 new directory, verifies metadata and chunk hashes, atomically activates it, then
-replays subsequent entries. A learner follows this same path.
+replays subsequent entries). A learner follows this same path. Snapshot size at TiB scale is hundreds of MiB; M4-01 MUST measure and document incremental/segmented transfer if full snapshots exceed one manifest frame (research/04-storage-model.md, research/01-consensus-raft.md R-5).
 
 Background anti-entropy compares snapshot/chunk manifests and repairs missing
 objects from a healthy voter. A chunk is collectible only when no retained
 metadata snapshot, committed manifest, in-flight operation, or valid client
-read lease can reference it. GC is mark-and-sweep with a persisted generation;
-it never deletes a chunk based solely on a local reference count after crash.
+read lease can reference it, AND the collection epoch has advanced past the oldest retained snapshot index (grace period — "no deletion on local refcount" alone is insufficient after a crash). GC is mark-and-sweep with a persisted generation;
+it never deletes a chunk based solely on a local reference count after crash. Reachability pins: Pebble `Snapshot()`/`Checkpoint()` handles, snapshots, and leases all pin; GC takes the union (research/04-storage-model.md G-5).
 
 ## 9. Security model
 
@@ -418,7 +415,7 @@ storage. The MVP uses the following mechanisms:
   writes;
 - immutable append-only pack segments and Pebble indexes to reduce local small
   file and directory metadata amplification;
-- short, configurable group commit bounded to 0–5 ms (default target: 2 ms);
+- short, configurable group commit bounded to 0–5 ms (default target: 2 ms) — GROUP-COMMIT OWNER: the volume leader only, batching independent ready commands received within the window; followers never group-commit. The 4 KiB quorum-write p99 gate (25 ms) is the admission test; if qualification hardware cannot meet it, the honest response is an SLO revision, not a data-path change (D-001).
 - separate, prioritized QUIC streams for Raft/leases versus bulk chunks;
 - pipelined follower chunk preparation and Raft replication; and
 - userspace versioned read cache rather than unsafe long-lived kernel caching.
@@ -437,7 +434,7 @@ the benchmark suite must show, on that named profile:
 
 These are qualification gates, not universal production promises. The benchmark
 report records CPU model, kernel, storage flush behavior, network, volume size,
-and exact binary/configuration.
+and exact binary/configuration. Accounting rule: the 1000 ops/s gate includes FUSE round-trip, chunk QUIC transfer, quorum fsyncs, Raft replication, and lease revocation — not net-only throughput. Small-input (4 KiB) BLAKE3 cost is excluded from the quota (negligible at this size, measured and reported). "Honors flushes" holds ONLY if the backing ext4/XFS mount is pinned with `data=ordered`, barriers on, and `commit=5s` window documented, plus Pebble `Sync` — a non-honoring flush behavior is a deployment defect, not an architecture defect (research/04-storage-model.md §4).
 
 ## 12. Operations and rollout
 
@@ -449,8 +446,7 @@ and exact binary/configuration.
 3. Create the strict volume only after three healthy voters exist.
 4. Enroll application mount hosts with client certificates, mount the volume,
    then start the dependent service.
-5. Add a replacement node as learner, scrub/catch it up, use Raft joint
-   consensus to promote it, drain the departing voter, and remove it last.
+5. Add a replacement node as learner, scrub/catch it up, use a Raft membership change to promote it (single-learner promotion is a simple change under `TransitionAuto`; true joint consensus is reserved for multi-voter atomic swaps — research/01-consensus-raft.md R-2), drain the departing voter, and remove it last.
 
 Only one voter membership change may run at a time. The CLI must refuse unsafe
 orders rather than relying on operator memory.
@@ -506,11 +502,13 @@ tests are not a substitute for the production kernel boundary.
 
 ## 14. Open questions
 
+Defaults adopted for Phase-0 closure; each default falsifiable by a new decision log entry (see research/06-ops-phase0-gate.md §4 + .spec/decisions.md D-001 follow-ups).
+
 1. Which concrete application/version is the first qualification target, and
-   which filesystem calls does its HA suite require beyond the current profile?
+   which filesystem calls does its HA suite require beyond the current profile? DEFAULT: Jira Data Centre TBD at M5-02; 5-part contract in research/06-ops-phase0-gate.md §D.
 2. Must the first production deployment integrate with an existing enterprise
-   CA, or is the offline built-in CA workflow sufficient?
+   CA, or is the offline built-in CA workflow sufficient? DEFAULT: offline built-in CA sufficient for MVP; enterprise PKI post-MVP.
 3. Is host-level LUKS/dm-crypt an acceptable at-rest encryption boundary for the
-   MVP, or is a key-manager-backed application encryption layer required?
+   MVP, or is a key-manager-backed application encryption layer required? DEFAULT: LUKS/dm-crypt acceptable for MVP; KMS post-MVP; LUKS protects powered-off disk only.
 4. What quota model is needed first: only volume quota, or per-directory/user
-  quota? The MVP data model reserves limits but does not implement policy yet.
+  quota? The MVP data model reserves limits but does not implement policy yet. DEFAULT: volume quota only for MVP, enforced at chunk-admission before majority receipts; per-directory/user post-MVP.

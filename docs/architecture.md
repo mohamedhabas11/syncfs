@@ -1,5 +1,7 @@
 # SyncFS Architecture
 
+> **Reconciled (2026-11-08):** Architecture reflects the unified baseline (FUSE + etcd/raft/v3 + QUIC + Pebble/BLAKE3 strict volume; Camp B state/POSIX-apply/quarantine folded in). Any native-directory/watcher/pull-based sections are superseded — see research/07-design-fork-reconciliation.md §3.5 and decision D-001.
+
 ## The design in one sentence
 
 SyncFS places a Linux FUSE client in the application's I/O path and uses a

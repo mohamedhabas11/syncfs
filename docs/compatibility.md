@@ -28,9 +28,9 @@ cluster.
 | --- | --- | --- |
 | NFS/SMB serving | Not provided | A protocol gateway would add another cache/lock consistency contract before the core is proven. |
 | Direct local-brick access | Forbidden | Bypasses fencing, locks, metadata ordering, and cache invalidation. |
-| Shared writable `mmap` | `EOPNOTSUPP` | Correct distributed page-cache coherence needs a separate design. |
+| Shared writable `mmap` | `EOPNOTSUPP` | Correct distributed page-cache coherence needs a separate design. Kernel enforcement point is the `mmap` handler returning `EOPNOTSUPP`, not open-time text. |
 | Device nodes, sockets, FIFOs | `EOPNOTSUPP` | They are not appropriate for a replicated shared-home namespace. |
-| `O_DIRECT` | `EOPNOTSUPP` in strict mode | The cache and durability contract is implemented by SyncFS, not bypassed. |
+| `O_DIRECT` | `EINVAL` in strict mode (per man 2 open: unsupported flags map to `EINVAL`, not `EOPNOTSUPP`) | The cache and durability contract is implemented by SyncFS, not bypassed. |
 | Cross-volume rename/link | `EXDEV` | POSIX-compatible and avoids distributed two-volume transactions. |
 | Wide-area / multi-region cluster | Unsupported | The latency and partition model conflicts with low-latency quorum operations. |
 | Two storage voters | Unsupported for strict writes | A two-node system cannot distinguish a failed peer from a partition without a third voting failure domain. |
@@ -40,10 +40,10 @@ cluster.
 
 | Condition | Error exposed to the application |
 | --- | --- |
-| No leader or no quorum | `EHOSTDOWN` after the configured request deadline. |
-| Known stale file handle | `ESTALE`. |
-| Unsupported filesystem operation | `EOPNOTSUPP`. |
-| Lock conflict | Block for blocking lock calls; otherwise `EAGAIN`. |
+| No leader or no quorum | `EIO` after the configured request deadline (`EHOSTDOWN` is a network-layer errno with no `open(2)`/FUSE precedent — do not surface it; use `EIO` uniformly. If a future revision wants `EHOSTDOWN`, it must cite a man-2 precedent). |
+| Known stale file handle | `ESTALE` (FUSE `fh`/generation trigger MUST be defined in M3-01 — an `fh` maps to inode ID + generation; `ESTALE` means generation mismatch, not NFS handle semantics). |
+| Unsupported filesystem operation | `EOPNOTSUPP` only where the `ENOSYS`-vs-`EOPNOTSUPP` override table (M3-01) names it; `O_DIRECT` → `EINVAL` (see exclusions). |
+| Lock conflict | Block for blocking lock calls; otherwise `EAGAIN`. Deadlock: `EDEADLK` (V1 leader detection, M2-06). |
 | Permission rejection | `EACCES` or `EPERM`. |
 | Storage capacity unavailable on a write quorum | `ENOSPC`. |
 | Lost FUSE transport / unresolvable ambiguous mutation | `EIO` or `ENOTCONN`; the client exposes the operation ID for operator diagnosis. |

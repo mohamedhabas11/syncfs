@@ -272,11 +272,13 @@ edit shared schemas or generated code concurrently.
 
 ## Final Verification
 
+> **Phase-0 honesty (2026-11-08):** Foundation docs cover durability, consistency, security, membership, operations, compatibility, and task-level verification — evidence per claim in `research/` (Agent 7 fork proof; Agents 1–6 domain audits). `git diff --check` + link audit PASS on this patch (see `.spec/state.md` Verification Status for hashes). Eight earlier `done/passed` assertions lacked hash/log/URL and are downgraded to "ready to close pending gate" — only `go test: Blocked` and the "CLI not implemented yet" notes were honest as written (research/06 §6). Gate definition: `research/00-synthesis-phase0-closure.md` + `research/06-ops-phase0-gate.md` §4.
+
 - [x] Verify the architecture artifacts cover durability, consistency, security,
-  membership, operations, compatibility, and task-level verification.
+  membership, operations, compatibility, and task-level verification (evidence-linked, research/00–07).
 - [x] Run git diff --check after document edits.
 - [x] Run Markdown link audit after document edits.
-- [ ] Run Go tests after M1-01 creates the module and toolchain baseline.
+- [ ] Run Go tests after M1-01 creates the module and toolchain baseline (blocked; local Go 1.15.6 < Go 1.26 baseline).
 
 ## Handoff Notes
 

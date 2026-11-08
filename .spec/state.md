@@ -77,7 +77,8 @@ definition. There are no implementation repositories yet.
 - Markdown link audit: Passed - all local Markdown targets resolve and fenced
   block delimiters are balanced.
 - go test ./...: Blocked - no Go module or implementation exists; the local
-  Go 1.15.6 toolchain is below the planned Go 1.25 baseline.
+  Go 1.15.6 toolchain is below the planned Go 1.26 baseline.
+- Phase-0 closure (2026-11-08): Design fork closed by D-001 (research/07); ARCHIVE banners applied to camp-B files; technical corrections applied per research/00-synthesis-phase0-closure.md. Phase 0 = "foundation complete, implementation not started"; remaining gate boxes (Go 1.26 pins, M1-01) move to M1 exit criteria.
 
 ## Handoff Notes
 

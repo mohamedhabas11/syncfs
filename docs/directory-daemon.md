@@ -6,7 +6,7 @@
 > use [`.spec/technical_spec.md`](../.spec/technical_spec.md) and
 > [`docs/architecture.md`](architecture.md) as the implementation contract.
 
-> Living design spec. Status: **Draft v0.1.0** · Updated: 2026-11-08
+> Do not treat as current spec. **Superseded (2026-11-08, D-001).** Status: **Draft v0.1.0** · Updated: 2026-11-08
 
 ## 1. Summary
 

@@ -1,5 +1,7 @@
 # Research: SyncFS Shared Directory MVP
 
+> **Reconciled (2026-11-08):** See `research/07-design-fork-reconciliation.md` and `.spec/decisions.md` D-001 for the closed design fork. This file is retained as foundation research; new domain audits live in `research/01..07`.
+
 ## Goal
 
 Define an implementable, small-cluster shared-directory service for HA
