@@ -3,6 +3,7 @@
 Learner-first admission; one membership change at a time (Inv.8).
 Promotion uses joint consensus (`ConfChangeV2` JointImplicit) then an
 empty ConfChangeV2 to leave the joint configuration (ADR-0003).
+Removal is refused at 3 voters (replacement first).
 
 ```mermaid
 sequenceDiagram
@@ -21,11 +22,11 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Learner: BeginAdd
-    Learner --> Catchup: ObserveCatchup >= commit
-    Catchup --> Joint: RequestJointPromotion
-    Joint --> Promoted: LeaveJoint
-    Promoted --> Draining: BeginDrain
-    Draining --> Removed: BeginRemove (voters > 3)
+    [*] --> Learner : BeginAdd
+    Learner --> Catchup : ObserveCatchup >= commit
+    Catchup --> Joint : RequestJointPromotion
+    Joint --> Promoted : LeaveJoint
+    Promoted --> Draining : BeginDrain
+    Draining --> Removed : BeginRemove (voters > 3)
     Removed --> [*]
 ```

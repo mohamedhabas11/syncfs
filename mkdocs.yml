@@ -38,9 +38,14 @@ nav:
     - 0003 Joint promotion: adr/0003-joint-promotion-durable-journal-cli.md
   - Benchmarks:
     - Methodology: benchmarks/README.md
+    - Floor: benchmarks/floor.md
+    - Sweep: benchmarks/sweep.md
+    - Netem: benchmarks/netem.md
+    - Metrics: benchmarks/metrics-table.md
   - Releases:
     - v0.1.0: releases/v0.1.0.md
   - Reference:
     - CLI and config: reference/cli.md
     - Config: reference/config.md
     - API/proto: reference/api.md
+  - Superseded draft: directory-daemon.md

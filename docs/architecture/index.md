@@ -47,15 +47,18 @@ external database or control plane.
 
 | Component | Status | Responsibility |
 | --- | --- | --- |
-| `syncfs mount` | M3 skeleton + compat surface (in-memory) | FUSE server, POSIX adaptation, local client journal, coherent cache. |
-| `syncfs daemon` | storage core built; QUIC endpoints from M1-04 | QUIC transport, Raft peer, metadata state machine, chunk store, snapshot service, repair, metrics. |
-| `syncfs admin` | CLI skeleton (stubs documented) | Bootstrap, volume lifecycle, PKI/enrollment workflow, membership changes, status, recovery. |
-| Volume Raft group | M2-04 (3-node mesh tested) | Orders namespace/metadata mutations, locks, membership state, lease changes. |
-| Chunk store | M2-02 + GC (M4-01) | Immutable 64 KiB BLAKE3 chunks, Packs, Pebble index, epoch sweeps. |
+| `syncfs mount` | stub + M3 library surface (in-memory) | `mount` validates `--volume`/`--target` and prints (exit 0/1/2); the FUSE handler, journal, and cache are library components — E2E mount wiring pending (`cmd/syncfs/main.go:150`, `internal/fusefs/fusefs.go:88`). |
+| `syncfs daemon` | stub; library core built | `daemon` validates `--config` existence and prints (exit 0/1/2); QUIC endpoints, Raft peer, metadata state machine, chunk store, snapshot, and metrics are library code — E2E daemon wiring pending (`cmd/syncfs/main.go:132`, `internal/transport/session.go:23`). |
+| `syncfs admin` | CLI stubs (validate + describe) | Bootstrap, volume, member operations validate flags and describe the control-plane action; they never propose to Raft (`cmd/syncfs/main.go:70`, `docs/reference/cli.md`). |
+| Volume Raft group | M2-04 (3-node mesh tested) | Orders namespace/metadata mutations, locks, membership state, lease changes (`internal/raftstore/driver/driver.go:73`). |
+| Chunk store | M2-02 + GC (M4-01) | Immutable 64 KiB BLAKE3 chunks, packs, Pebble chunk index, epoch sweeps (`internal/chunkstore/chunkstore.go:1`, `internal/chunkstore/gc/gc.go:1`). |
 
 One Go binary, `syncfs`, with `admin` / `daemon` / `mount` subcommands
-(`cmd/syncfs`). Separate processes for storage and mount roles; no
-containers, Kubernetes, or service mesh required in production.
+(`cmd/syncfs`). Separate processes for storage and mount roles are the
+target; the current binaries are validation stubs, not running daemons.
+The test fleet (`docker compose run --rm node-a go test ./... -race`) is
+the current way to build and verify; no containers, Kubernetes, or
+service mesh are required.
 
 ## Why a volume has a leader
 
@@ -76,10 +79,14 @@ The critical invariant is: **a successful mutation has durable payload chunks
 on a majority of current voters and a committed metadata command that references
 those exact chunks.**
 
-The leader combines independent requests for a short, bounded group-commit
-window. It never acknowledges a mutation before the quorum condition holds.
-Chunk upload and Raft replication are pipelined on separate QUIC streams, so a
-large transfer does not block metadata or another file's small write.
+The leader never acknowledges a mutation before the quorum condition
+holds (Inv.3). There is no bounded group-commit window yet: the spec
+§11 target is 0–5 ms (default 2 ms) batched by the volume leader only;
+the current coordinator allocates a monotonic Raft index per proposal
+and applies one command at a time (`internal/volume/volume.go:23`).
+Classed QUIC streams exist in `internal/transport`, but the
+coordinator is currently an in-process fan-out over local chunk stores;
+end-to-end QUIC pipelining is pending.
 
 ```mermaid
 sequenceDiagram
@@ -88,19 +95,27 @@ sequenceDiagram
     participant Leader as volume leader
     participant Majority as storage majority (2/3)
     App->>Fuse: write/rename/fsync
-    Fuse->>Leader: client assigns stable OpID
-    Leader->>Majority: stage changed ranges as 64KiB COW chunks
-    Majority-->>Leader: durable chunk receipts
-    Leader->>Leader: revoke affected read/directory leases
-    Leader->>Leader: propose preconditioned metadata command to Raft
-    Leader->>Leader: wait Raft majority commit
-    Leader-->>Fuse: apply to metadata state machine
-    Fuse-->>App: success; invalidate remaining cache
+    Fuse->>Leader: OpID (stable 128-bit)
+    Leader->>Leader: validate volume, caller, versions, session/lock/lease (step 1)
+    Leader->>Leader: duplicate OpID returns retained result (step 2)
+    Leader->>Leader: 64KiB COW chunks + candidate manifest (step 3)
+    Leader->>Leader: local staging + BLAKE3 verify + durable (step 4a)
+    Leader->>Majority: stream chunks to majority (step 4b)
+    Majority-->>Leader: durable receipts (peer, hash, gen, bytes) (step 5)
+    Leader->>Leader: revoke leases + wait ack or expiry (step 6)
+    Leader->>Leader: propose WriteRanges (old versions, manifest, receipts, OpID) (step 7)
+    Leader->>Leader: persist WAL + hard state before send; wait commit (step 8)
+    Leader->>Leader: fetch missing chunks; atomic apply; record result (step 8)
+    Leader-->>Fuse: invalidations, then success (step 9)
 ```
 
-Uncommitted chunks are harmless garbage: they have no namespace reference and are reclaimed only after a conservative epoch-based sweep. A follower may store
-a committed log entry before it has all referenced chunks, but it may not apply
-the entry or become leader until it has verified those chunks.
+Uncommitted chunks are harmless garbage: they have no namespace
+reference and are reclaimed only after a conservative epoch-based
+sweep (`internal/chunkstore/gc/gc.go:59`). Inv.4: a follower may store
+a committed log entry before it has all referenced chunks, but it must
+not apply the entry or campaign for leader until it has verified those
+chunks (`internal/raftstore/driver/driver.go:286`); vote grants are
+not gated, so a promoted-but-unapplied voter still votes.
 
 ## Read and cache-coherence path
 
@@ -117,8 +132,16 @@ The normal mount mode is `strict`:
 
 This gives local cache speed to read-heavy shared homes without the hidden,
 time-based stale reads normally associated with network filesystem clients.
-For an operation that needs a fresh answer and has no lease, the mount performs
-a linearizable `ReadIndex`-style read through the volume group.
+For an operation that needs a fresh answer and has no lease, the mount
+performs a linearizable `ReadIndex` read with `ReadOnlySafe` set (spec
+§8.3) through the volume group. Client ReadLeases are fenced by the
+state-machine generation: `Valid` fails a lease at a stale generation
+(`internal/volume/lease/lease.go:99`), and revocation waits are bounded
+by `WaitClear` (ack or expiry, 2×TTL ceiling) (`internal/volume/lease/lease.go:114`).
+Three leases (Raft leader, client ReadLease, POSIX lock) are never
+conflated. On control-connection drop the client clears all entries and
+leases (`internal/client/cache/cache.go:58`, `internal/client/client.go:226`)
+and fails closed until `Reconnect` folds retained ops via server lookup.
 
 The first strict release keeps mutable-file cache authority in the mount process:
 it uses FUSE direct I/O for mutable data and zero/short kernel metadata TTLs.
@@ -127,18 +150,19 @@ kernel to serve an expired page. Kernel page-cache optimization waits for
 dedicated suspension and invalidation tests.
 
 Writes are globally visible when their FUSE request succeeds. The initial
-implementation does not hide dirty data behind writeback caching. That makes
-the consistency contract straightforward; bounded batching and chunked updates
-recover most of the small-write throughput without weakening visibility.
+implementation does not hide dirty data behind writeback caching, and
+`EnableWritebackCache` stays OFF in strict mode (spec §8.3). Only 64 KiB
+copy-on-write chunking currently reduces small-write cost; group-commit
+batching is a spec target, not yet implemented.
 
 ```mermaid
 flowchart TD
-    Fresh[cache miss / expired lease] --> RI[Raft ReadIndex or lease revalidate]
-    RI -->|lease valid| Hit[serve userspace cache]
-    RI -->|no lease / write conflicts| Leader[leader grants ReadLease]
+    Fresh[cache miss / expired lease] --> RI[ReadIndex with ReadOnlySafe or lease revalidate]
+    RI -->|lease valid and generation current| Hit[serve userspace cache]
+    RI -->|no lease / write conflicts| Leader[leader grants ReadLease at generation]
     Leader --> Cached[cache + serve]
-    Leader --> Invalidate[conflicting write: invalidate + ack before commit]
-    Drop[control connection lost] --> DropAll[invalidate ALL leases<br/>block instead of stale reads]
+    Leader --> Invalidate[conflicting write: revoke + WaitClear ack or expiry before commit]
+    Drop[control connection lost] --> DropAll[invalidate ALL entries and leases]
 ```
 
 ## Data model and local persistence
@@ -150,8 +174,10 @@ directory inode ── dentry(name) ──► file inode ──► file manifest
                                                 └── extent map ──► chunk hashes
 ```
 
-- Inodes have stable random identifiers, ownership, mode, timestamps, xattrs,
-  link count, and a monotonically increasing version.
+- Inodes have deterministic identifiers (`SHA256(OpID, parent, name)[0:16]`,
+  so all replicas derive the same ID for one committed CREATE), ownership,
+  mode, timestamps, xattrs, link count, and a monotonically increasing version
+  (`internal/metadata/metadata.go:272`).
 - A file manifest maps logical ranges to fixed 64 KiB BLAKE3-addressed chunks;
   holes need no physical chunks.
 - A metadata command carries expected inode/directory versions. A stale command
@@ -159,25 +185,48 @@ directory inode ── dentry(name) ──► file inode ──► file manifest
 - Files, manifests, and chunks are immutable once committed. A small overwrite
   replaces only the affected extent(s) and manifest.
 
-On each storage node, the daemon owns a private state directory such as:
+On each storage node, the daemon owns a private state directory. The
+layout below is the spec §7.5 target; only the paths marked * are
+implemented so far:
 
 ```text
 /var/lib/syncfs/
-  identity/              node identity and trusted CA material
-  groups/<group-id>/wal/ Raft WAL and hard state
+  identity/              node identity and trusted CA material *
+  groups/<group-id>/     Raft WAL (`wal.log`) + snapshot (`snap.bin`) *
   volumes/<volume-id>/
-    state/               replicated metadata and chunk index
-    packs/               append-only immutable chunk segments
-    staging/             uncommitted upload data
-    snapshots/           verified receive/send checkpoints
-    quarantine/          forensic copies from failed local recovery
+    pebble/              chunk index projection (chunkstore) *
+    packs/               pack-*.pack append-only chunk segments *
+    staging/             uncommitted upload data (target)
+    snapshots/           incoming/outgoing chunk manifests (target)
+    quarantine/          forensic evidence (target; today: skip, not copy *)
 ```
 
-The metadata/index store is an embedded, rebuildable local projection of the
-Raft log and snapshots; it is not an independent authority. Pebble serves the
-ordered index; append-only pack files avoid the many-small-files penalty of
-one host file per chunk. Its on-disk format is versioned and never shared directly with an
-application.
+* `internal/chunkstore/chunkstore.go:63` creates `pebble/` and
+`pack-*.pack`; `internal/raftstore/wal/wal.go:91` creates `wal.log`;
+`internal/raftstore/snapshot/snap.go:23` writes `snap.bin`.
+
+The metadata state machine is an in-memory, rebuildable projection of
+the Raft log (`internal/metadata/metadata.go:66`); it is not an
+independent authority and is not yet durably persisted in Pebble.
+Pebble is the chunk index only: each `Put` fsyncs the pack and its
+directory before indexing, then writes the index with
+`pebble.Sync` (`internal/chunkstore/chunkstore.go:216`, `:322`). Pack
+records are `[crc32(4)][len(3)][hash(32)][data]`
+(`internal/chunkstore/chunkstore.go:326`); append-only packs avoid the
+many-small-files penalty of one host file per chunk. On-disk formats
+are versioned and never shared directly with an application.
+
+WAL records are `[crc32(4)][len(4)][tag+payload]`
+(`internal/raftstore/wal/wal.go:8`): torn tails truncate on reopen,
+mid-log CRC corruption fails closed and the node stays non-voting
+(Inv.9), gaps are validated before any durable write, and the snapshot
+is restored before replay. `Compact` refuses to compact beyond the
+snapshot (`internal/raftstore/wal/wal.go:392`). Snapshots are
+`[sha256(32)][len(4)][pb]` and are persisted before being reported
+applied (`internal/raftstore/snapshot/snap.go:23`,
+`internal/raftstore/wal/wal.go:271`). Corrupt chunk packs are skipped
+on scan (mid-pack) rather than copied to a quarantine directory; the
+forensic copy is pending (`internal/chunkstore/chunkstore.go:127`).
 
 ## Failure model
 
@@ -187,8 +236,9 @@ application.
 | Leader fails | Clients retry their stable operation ID after a new leader is elected. A request is either confirmed committed or reported uncertain; it is never blindly replayed as a new mutation. |
 | Network partition | Only the side with a voter majority accepts writes. Minority mounts invalidate leases and return an availability error for new operations. |
 | No quorum | Strict mounts do not serve new uncached data or mutations. Optional stale-read mode is a later, explicit policy and is not the default. |
-| Follower disk/CRC failure | The node is removed from write eligibility, repaired from another replica, and must catch up before voting again. |
-| Full storage disk | The leader returns `ENOSPC` before commit if a quorum cannot persist the mutation. |
+| Follower corrupt/missing chunk | Refuse apply/candidacy for affected entries (deferred apply, `RetryApply` after fetch+verify); a promoted-but-unapplied voter still votes (`internal/raftstore/driver/driver.go:111`, `:275`). Repair from a healthy voter, then resume catch-up. |
+| Corrupt WAL/snapshot | Quarantine local state, remain non-voting, rebuild from a healthy snapshot; never truncate committed state automatically (Inv.9; WAL mid-log corruption fails closed today, forensic copy pending). |
+| Full storage disk | The coordinator refuses before commit with `ErrNoQuorum` if a quorum cannot persist the mutation (`internal/volume/volume.go:66`); the FUSE surface maps this to `EIO`/`ENOSPC` per the errno table. |
 | Mount process failure | The kernel FUSE connection is aborted; callers receive an error rather than silently using stale data. Systemd restarts and remounts the client. |
 
 The fault model is not a substitute for backup. Replication protects against a
@@ -216,14 +266,57 @@ placement, sharding, and five-plus-node replica sets are later work.
 ## Security boundary
 
 Every network connection uses mutual TLS 1.3 over QUIC with a private cluster
-CA. Node IDs are bound to certificate identities, RPCs include a cluster ID,
-and the protocol disables 0-RTT for all requests to prevent replayed mutations.
-The CA can be created and operated entirely offline; no cloud identity provider,
-DNS service, or external key-management service is required.
+CA. Node IDs are bound to certificate identities (exactly one URI SAN,
+`spiffe://syncfs.cluster/<cluster>/<type>/<id>`), RPCs include a cluster
+ID, and `VerifyConnection` (not `VerifyPeerCertificate` alone) enforces
+chain + SAN + cluster on every connection including resumed ones
+(`internal/transport/session.go:23`, `internal/auth/identity.go:108`).
+The protocol disables session tickets and 0-RTT for all requests to
+prevent replayed mutations. The CA can be created and operated entirely
+offline; no cloud identity provider, DNS service, or external
+key-management service is required.
 
 The MVP encrypts replication in transit. Operators who require disk encryption
 use LUKS/dm-crypt under the private state directory. Application users never
 receive host-level access to a brick, pack, or Raft directory.
+
+## Normative invariants (read this before the code)
+
+An engineer must be able to explain these five without opening the
+implementations. The full list is spec §4.
+
+- **Inv.3 — Payload before reference:** a metadata command is not
+  acknowledged until every newly-referenced 64 KiB chunk is durable on
+  a storage majority. Mechanism: `Coordinator.WriteChunks` stages and
+  verifies chunks, fans out to a quorum, and refuses before commit
+  with `ErrNoQuorum` otherwise (`internal/volume/volume.go:40`).
+- **Inv.4 — Apply only with payload:** a replica never applies a
+  committed command that references a missing or hash-invalid chunk,
+  and never campaigns while that entry is unapplied. Mechanism:
+  deferred `pending` queue + `ChunkGap`/`RetryApply`; vote grants are
+  not gated (`internal/raftstore/driver/driver.go:111`, `:275`).
+- **Inv.5 — No quorum, no mutation:** without a majority-confirmed
+  leader a node acknowledges no writes, locks, leases, or membership
+  changes. Mechanism: quorum receipts (`internal/volume/volume.go:66`)
+  and the Raft driver refusing commit without a majority; minority
+  mounts return `EIO` after the request deadline.
+- **Inv.6 — Strict cache safety:** before a lease expires or when the
+  control connection fails, the mount invalidates its userspace and
+  kernel-visible cache and blocks rather than serving stale data.
+  Mechanism: `Cache.InvalidateAll` clears entries and leases
+  (`internal/client/cache/cache.go:58`); `Session.Drop` aborts the
+  FUSE connection and `Check` fails closed until `Reconnect`
+  (`internal/client/client.go:226`). A strict volume never downgrades
+  to stale reads (Inv.10).
+- **Inv.10 — No hidden downgrade:** a strict mount never transparently
+  falls back to asynchronous replication or stale reads. Mechanism:
+  zero kernel TTLs + direct I/O for mutable handles
+  (`internal/fusefs/fusefs.go:105`, `:316`), single write-copy path via
+  the syncer seam that fails closed with `EIO` on syncer error
+  (`internal/fusefs/posix.go:62`), and the journal rule that an op
+  evicted by the 10k-entry / 10-minute bound surfaces `EIO` for
+  reconcile rather than re-executing as a fresh operation
+  (`internal/client/client.go:182`).
 
 ## Implementation boundaries
 

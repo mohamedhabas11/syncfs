@@ -16,23 +16,21 @@ network path that routinely partitions is not HA.
 
 ## Bootstrap and volume lifecycle
 
-The operator-facing CLI is validated in `cmd/syncfs` (see
-`docs/reference/cli.md` for exact flags and exit codes):
+The operator-facing CLI is a validate-and-describe stub in `cmd/syncfs`
+(see `docs/reference/cli.md` for exact flags and exit codes). It prints
+the control-plane action; the control plane performs the write. There is
+no `admin pki` subcommand:
 
 ```text
 # On an offline administrator workstation
-syncfs admin pki init --cluster-id <uuid>
-syncfs admin pki issue-node --node-id node-a
-
-# On the first storage node
-syncfs daemon --config /etc/syncfs/node.yaml
 syncfs admin bootstrap --cluster-id <uuid> --out /etc/syncfs/cluster.yaml
 
 # Add node-b and node-c as learners, then promote each after verification
+# (stub lines only; joint promotion itself goes through RequestJointPromotion)
 syncfs admin member --node node-b --op add-learner
 syncfs admin member --node node-b --op promote
 
-# Create a strict shared directory and mount it on an application host
+# Describe a strict shared directory and mount it on an application host
 syncfs admin volume --volume jira-shared-home --op status
 syncfs mount --volume jira-shared-home --target /srv/jira/shared-home
 ```
@@ -49,7 +47,7 @@ sequenceDiagram
     Learner->>Seed: prove identity (mTLS)
     Seed-->>Learner: verified snapshot + chunk stream
     Learner->>Learner: verify hashes, apply to committed index, scrub
-    Learner-->>Seed: promotion via membership change (voter)
+    Learner-->>Seed: joint promotion (ConfChangeV2 JointImplicit + LeaveJoint)
     Admin->>Seed: create strict volume (3 healthy voters)
 ```
 
@@ -83,7 +81,8 @@ spec:
 
 `chunkSizeBytes` is an on-disk format decision and cannot be changed in place.
 Quota enforcement, maximum file size, and the exact authorization schema are
-implemented before the volume API is declared stable.
+implemented before the volume API is declared stable. (Target shape only:
+the current `syncfs admin volume` stub does not parse this file.)
 
 ## Air-gapped identity and node enrollment
 
@@ -96,7 +95,7 @@ The security model uses an offline-capable private cluster CA:
    in cluster state, then creates a single-use enrollment bundle.
 4. The learner connects directly to a seed over mTLS, proves its identity,
    verifies the cluster ID, downloads a snapshot, and is promoted only after
-   catch-up and scrub verification.
+   catch-up and scrub verification (joint consensus, ADR-0003).
 
 All peer, client, snapshot, and chunk traffic runs over QUIC protected by TLS
 1.3. TLS session resumption may be used, but 0-RTT application data is disabled
@@ -135,5 +134,7 @@ Every node must expose structured logs and metrics for:
 - certificate expiry, enrollment events, membership changes, and administrative
   audit records.
 
-Alert before a voter is full or stale enough to threaten the remaining quorum;
-do not wait for a write-path failure.
+A Prometheus-text collector for these metrics exists
+(`internal/observability/observability.go`); wiring it into the running
+daemon is M5 work. Alert before a voter is full or stale enough to threaten
+the remaining quorum; do not wait for a write-path failure.

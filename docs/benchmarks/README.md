@@ -23,7 +23,7 @@ Harnesses: `cmd/bench-floor`, `cmd/bench-sweep` (Go, run in-VM via
 `make bench-floor` / `make bench-sweep`), plus `test/benchmark/` edge gate
 (`test/benchmark/edge.sh`). Render: `python3 scripts/bench-render.py`.
 
-## Compliant results (Docker Desktop, commit `d0adf1d` + uncommitted bench harness)
+## Compliant results (Docker Desktop, commit `b649526` + uncommitted bench harness)
 
 Fresh-volume runs (`docker volume rm syncfs_bench-data` before, 2026-11-08).
 Both `floor-volume.json` / `floor-tmpfs.json` and `sweep-volume.json` /
@@ -35,11 +35,11 @@ Both `floor-volume.json` / `floor-tmpfs.json` and `sweep-volume.json` /
 | sweep (quorum writes) | `sweep.md` | 1,8,32,128 clients x 100 ops, 4 KiB fresh quorum writes, 6 fsyncs/entry |
 | netem | `netem.md` | separate table — **UNVERIFIED (not run)** |
 
-Clean results (see files for per-run JSON): volume floor ~2,434 ops/s
-(p50 0.17 ms), tmpfs floor ~1.05M ops/s (fsync is a no-op in memory);
-volume sweep ~795–917 ops/s (0.33–0.38 of floor, p50 1.1 ms → 139 ms as
-clients grow 1 → 128), tmpfs sweep ~9.8K–13.8K ops/s; gap tmpfs/volume
-~12–15x. **Variance warning:** a warm-cache re-run measured ~8K ops/s on
+Clean results (see files for per-run JSON): volume floor ~1,299 ops/s
+(p50 0.35 ms), tmpfs floor ~1.15M ops/s (fsync is a no-op in memory);
+volume sweep ~867–900 ops/s (0.67–0.69 of floor, p50 1.1 ms → 141 ms as
+clients grow 1 → 128), tmpfs sweep ~7.1K–12.9K ops/s; gap tmpfs/volume
+~8–14x. **Variance warning:** a warm-cache re-run measured ~8K ops/s on
 the same named volume (10x). Treat these as order-of-magnitude VM
 observations, not stable targets — re-run after `docker volume rm` for
 comparable cold numbers.

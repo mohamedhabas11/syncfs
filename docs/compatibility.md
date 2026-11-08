@@ -13,12 +13,12 @@ cluster.
 | Paths and directories | Hierarchical UTF-8 byte names except `/` and NUL; atomic `mkdir`, `rmdir`, `unlink`, and same-volume `rename`. |
 | Regular files | Create, open, read, write, truncate, append, seek, sparse holes, and atomic replacement. |
 | Visibility | A successful mutating FUSE call is globally visible in one Raft order. Local dirty data is not acknowledged as globally committed. |
-| Durability | `write`, `fsync`, `fdatasync`, and directory-changing operations complete only after their required data and metadata are quorum durable. |
-| Atomic creation | `O_CREAT|O_EXCL`, `mkdir`, and `rename` are serialized by the volume metadata state machine. |
-| Locks | Cluster-coherent `flock` and POSIX byte-range locks; lock ownership is tied to the client session and released after session expiry. |
-| Metadata | uid/gid, mode bits, sticky/setgid directory behavior, timestamps, `stat`, `statx`, and `fsyncdir`. |
+| Durability | Library path: chunks are quorum-durable before the metadata commit (`Coordinator.WriteChunks` + Raft, Inv.3). FUSE `Fsync`/`FsyncDir` are seam-level no-ops today; E2E coordinator wiring is M5 work (see `docs/known-limitations.md` #6/#17). |
+| Atomic creation | `mkdir` and `rename` are serialized by the volume metadata state machine (rename = one command). `O_CREAT|O_EXCL` is only the Handler `CreateFile` dup -> EEXIST; FUSE `Open` does not yet interpret `O_CREAT`/`O_EXCL` flags. |
+| Locks | Manager-level cluster-coherent `flock` and POSIX byte-range locks (family queues, cancellable wait, `EDEADLK`); lock ownership is tied to the client session and released after session expiry. Raft-ordered E2E wiring is pending. |
+| Metadata | uid/gid, mode bits, sticky/setgid directory behavior, timestamps, `stat`, `statx`, and `fsyncdir` (handle-layer surface; kernel traversal pending (#15)). |
 | Links | Symlinks and hard links within a volume; unlink of an open file retains the inode until the last handle closes. |
-| Extended attributes | `user.*` and POSIX ACL xattrs are planned in the first compatibility milestone; unsupported namespaces fail explicitly. |
+| Extended attributes | `user.*` with non-empty suffix is live; POSIX ACL xattrs are planned (enforcement pending); unsupported namespaces fail explicitly (EOPNOTSUPP/EPERM at the Handler, `ErrCommandFailed` in the state machine). |
 | Cache behavior | Coherent cache leases with explicit FUSE invalidation. A disconnected strict mount never knowingly serves stale cache data. |
 | Quorum loss | New uncached reads and writes fail instead of silently becoming eventually consistent. |
 
@@ -28,9 +28,9 @@ cluster.
 | --- | --- | --- |
 | NFS/SMB serving | Not provided | A protocol gateway would add another cache/lock consistency contract before the core is proven. |
 | Direct local-brick access | Forbidden | Bypasses fencing, locks, metadata ordering, and cache invalidation. |
-| Shared writable `mmap` | `EOPNOTSUPP` | Correct distributed page-cache coherence needs a separate design. Kernel enforcement point is the `mmap` handler returning `EOPNOTSUPP`, not open-time text. |
-| Device nodes, sockets, FIFOs | `EOPNOTSUPP` | They are not appropriate for a replicated shared-home namespace. |
-| `O_DIRECT` | `EINVAL` in strict mode (per man 2 open: unsupported flags map to `EINVAL`, not `EOPNOTSUPP`) | The cache and durability contract is implemented by SyncFS, not bypassed. |
+| Shared writable `mmap` | excluded (pending explicit handler; today the kernel gets the default ENOSYS, not a guaranteed `EOPNOTSUPP`) | Correct distributed page-cache coherence needs a separate design. The enforcement point *should be* a `mmap` handler returning `EOPNOTSUPP`; that handler is not yet implemented. |
+| Device nodes, sockets, FIFOs | `EOPNOTSUPP` (policy) | They are not appropriate for a replicated shared-home namespace. |
+| `O_DIRECT` | `EINVAL` on Linux in strict mode (per man 2 open: unsupported flags map to `EINVAL`, not `EOPNOTSUPP`); build-tagged, no check off-Linux | The cache and durability contract is implemented by SyncFS, not bypassed. |
 | Cross-volume rename/link | `EXDEV` | POSIX-compatible and avoids distributed two-volume transactions. |
 | Wide-area / multi-region cluster | Unsupported | The latency and partition model conflicts with low-latency quorum operations. |
 | Two storage voters | Unsupported for strict writes | A two-node system cannot distinguish a failed peer from a partition without a third voting failure domain. |
@@ -45,7 +45,7 @@ cluster.
 | Unsupported filesystem operation | `EOPNOTSUPP` only where the `ENOSYS`-vs-`EOPNOTSUPP` override table (M3-01) names it; `O_DIRECT` → `EINVAL` (see exclusions). |
 | Lock conflict | Block for blocking lock calls; otherwise `EAGAIN`. Deadlock: `EDEADLK` (V1 leader detection, M2-06). |
 | Permission rejection | `EACCES` or `EPERM`. |
-| Storage capacity unavailable on a write quorum | `ENOSPC`. |
+| Storage capacity unavailable on a write quorum | Coordinator refuses with `ErrNoQuorum` before commit; the FUSE surface maps unmet-quorum writes to `EIO` (fail closed) with `ENOSPC` used where a capacity code is named. |
 | Lost FUSE transport / unresolvable ambiguous mutation | `EIO` or `ENOTCONN`; the client exposes the operation ID for operator diagnosis. |
 
 ## Application qualification
