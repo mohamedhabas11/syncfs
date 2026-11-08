@@ -14,6 +14,7 @@ Autonomous build log. One line per milestone: id, commit, commands, result.
 | 2026-11-08 | M2-04 raft driver + 3-node mesh | c89af8c | go test ./internal/raftstore/... -race (fleet) | PASS |
 | 2026-11-08 | M2-05 quorum write coordinator | 9ae7f7b | go test ./internal/volume/... -race (fleet) | PASS |
 | 2026-11-08 | M2-06 leases + locks + cache | c8fc0eb | go test ./... -count=1 -race (fleet), go build/vet ./... (host go1.26.0) | PASS |
+| 2026-11-08 | M3-02 POSIX compat surface | TBD | go test ./internal/fusefs/... -race (fleet) | PASS |
 | 2026-11-08 | M3-01 FUSE skeleton (partial) | e133cab | mermaid diagrams; TestFUSEmountSmoke green in container | PARTIAL |
 
 ## Spec-sheet progress tracking

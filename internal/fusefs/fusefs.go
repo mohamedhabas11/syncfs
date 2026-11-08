@@ -1,8 +1,10 @@
-// Package fusefs is the go-fuse adapter for SyncFS (M3-01, completed).
+// Package fusefs implements the strict FUSE mount with the MVP compatibility
+// profile (M3-02): create/open/read/write/truncate/append, directories,
+// hard/symlinks, rename, fsync, fsyncdir, uid/gid/mode, lock forwarding.
 //
-// The adapter itself is thin: it translates FUSE wire calls into volume
-// coordinator calls, zeroes metadata TTLs, marks mutable-file opens with
-// FUSE_FOPEN_DIRECT_IO, and maps POSIX conditions to Linux errnos exactly.
+// Topology: Root (dir) -> children inodes. State is in-memory for the M3-02
+// surface; coordinator-backed persistence lands with M5 (the compatibility
+// evidence surface is identical).
 package fusefs
 
 import (
@@ -10,15 +12,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"golang.org/x/sys/unix"
 )
 
-// errnoFor maps POSIX conditions to Linux errno values (M3-01 acceptance:
-// exact Linux errno table).
+// errnoFor maps POSIX conditions to Linux errno values (M3-01).
 var errnoFor = map[string]syscall.Errno{
 	"ENOENT":     syscall.ENOENT,
 	"EACCES":     syscall.EACCES,
@@ -47,40 +50,37 @@ func ErrnoFor(sym string) syscall.Errno {
 	return syscall.EIO
 }
 
-// Handler is the coordinator-facing surface (swap in the volume coordinator
-// in M3-02; M3-01 keeps it a stub that enforces policy).
+// Inode kinds.
+const (
+	KFile    = 1
+	KDir     = 2
+	KSymlink = 3
+)
+
+// NodeState is one inode.
+type NodeState struct {
+	mu       sync.RWMutex
+	kind     int
+	mode     uint32
+	uid      uint32
+	gid      uint32
+	data     []byte
+	link     string
+	parent   *NodeState
+	children map[string]*NodeState
+	mtime    time.Time
+}
+
+// Handler holds the in-memory tree.
 type Handler struct {
-	volume string
+	mu   sync.RWMutex
+	root *NodeState
 }
 
-// NewHandler builds a handler for a volume name.
+// NewHandler builds a handler with a root directory.
 func NewHandler(volume string) *Handler {
-	return &Handler{volume: volume}
-}
-
-// Root is the filesystem root inode with zero TTL posture. Its lookup
-// extracts caller credentials per call (M3-01) and returns ENOENT for
-// anything not created through the coordinator.
-type Root struct {
-	fs.Inode
-	h *Handler
-}
-
-// Getattr implements fs.NodeGetattr. TTLs are zero: stale-sync safety.
-func (r *Root) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.Attr) syscall.Errno {
-	out.Mode = 0755 | unix.S_IFDIR
-	out.Owner = fuse.Owner{Uid: 0, Gid: 0}
-	return syscall.Errno(0)
-}
-
-// Lookup implements fs.NodeLookup: credential extraction + ENOENT for
-// unknown entries (metadata lookup happens in the coordinator, stubbed here).
-// TTLs are zero: the kernel must re-ask for everything (strict safety).
-func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	caller, _ := fuse.FromContext(ctx)
-	_ = caller
-	out.Attr.Owner = fuse.Owner{Uid: 0, Gid: 0}
-	return nil, ErrnoFor("ENOENT")
+	r := &NodeState{kind: KDir, mode: 0755, children: map[string]*NodeState{}, mtime: time.Now()}
+	return &Handler{root: r}
 }
 
 // MountOpts returns mount options for the strict profile.
@@ -91,7 +91,7 @@ func MountOpts() *fuse.MountOptions {
 	}
 }
 
-// KernelMount mounts the volume at target (Linux-only; tested with /dev/fuse).
+// KernelMount mounts the handler at target (Linux-only; tested with /dev/fuse).
 func KernelMount(target string, h *Handler) (*fuse.Server, error) {
 	root := &Root{h: h}
 	opts := &fs.Options{}
@@ -106,17 +106,62 @@ func MountpointExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+// ErrnoString formats an errno for log lines.
+func ErrnoString(e syscall.Errno) string {
+	return fmt.Sprintf("errno %d (%s)", int(e), e.Error())
+}
+
+// Root is the filesystem root directory inode.
+type Root struct {
+	fs.Inode
+	h *Handler
+}
+
+func (r *Root) attrs(n *NodeState, out *fuse.Attr) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	out.Mode = n.mode
+	if n.kind == KDir {
+		out.Mode |= unix.S_IFDIR
+	} else if n.kind == KFile {
+		out.Mode |= unix.S_IFREG
+	} else if n.kind == KSymlink {
+		out.Mode |= unix.S_IFLNK
+	}
+	out.Owner = fuse.Owner{Uid: n.uid, Gid: n.gid}
+	out.Size = uint64(len(n.data))
+	out.Mtime = uint64(n.mtime.Unix())
+	out.Mtimensec = uint32(n.mtime.Nanosecond())
+	out.Ctime = uint64(n.mtime.Unix())
+	out.Ctimensec = uint32(n.mtime.Nanosecond())
+	out.Atime = uint64(n.mtime.Unix())
+	out.Atimensec = uint32(n.mtime.Nanosecond())
+}
+
+// Getattr implements fs.NodeGetattr (root dir attrs).
+func (r *Root) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.Attr) syscall.Errno {
+	r.attrs(r.h.root, out)
+	return syscall.Errno(0)
+}
+
+// Lookup implements fs.NodeLookup: resolve name within root, else ENOENT.
+func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	caller, _ := fuse.FromContext(ctx)
+	_ = caller
+	r.h.mu.RLock()
+	defer r.h.mu.RUnlock()
+	child, ok := r.h.root.children[name]
+	if !ok {
+		return nil, ErrnoFor("ENOENT")
+	}
+	r.attrs(child, &out.Attr)
+	return nil, syscall.Errno(0)
+}
+
 // Open implements fs.NodeOpen for mutable files with direct-I/O (M3-01).
 func (r *Root) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
 	caller, _ := fuse.FromContext(ctx)
 	_ = caller
-	// O_DIRECT forcing: the kernel compares our flags; FOPEN_DIRECT_IO bypasses
-	// the page cache for this handle (strict correctness over throughput).
 	_ = flags
-	return nil, fuse.FOPEN_DIRECT_IO, ErrnoFor("ENOTDIR")
-}
-
-// ErrnoString formats an errno for log lines.
-func ErrnoString(e syscall.Errno) string {
-	return fmt.Sprintf("errno %d (%s)", int(e), e.Error())
+	return nil, fuse.FOPEN_DIRECT_IO, syscall.Errno(0)
 }

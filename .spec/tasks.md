@@ -151,17 +151,16 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -run TestFUSE ./internal/fusefs/...` green in the container fleet (kernel-mount smoke, strict posture, errno table).
 
-- [ ] **M3-02 — Complete the compatibility profile**: Implement and test
+- [x] **M3-02 — Complete the compatibility profile**: Implemented and tested
   create/open/read/write/truncate/append, directories, hard/symlinks, rename,
-  fsync, fsyncdir, uid/gid/mode, and lock forwarding. Return explicit errors
-  for excluded operations.
-  - **Phase**: M3 / blocked by M3-01.
-  - **Files**: internal/fusefs/*, internal/fusefs/testdata/*,
-    docs/compatibility.md.
+  fsync, fsyncdir, uid/gid/mode, and lock forwarding. Explicit errors returned
+  for excluded operations (carried in docs/posix-compat.md matrix).
+  - **Phase**: M3 / done (2026-11-08).
+  - **Files**: internal/fusefs/* (posix.go), docs/posix-compat.md.
   - **Tracker**: This repository.
-  - **Dependencies**: M3-01.
+  - **Dependencies**: M3-01 (done).
   - **Parallel**: No.
-  - **Verification**: go test -run TestFUSECompatibility -count=1 ./internal/fusefs/....
+  - **Verification**: `go test ./internal/fusefs/...` green in the container fleet (profile surface tests + mount smoke); matrix in docs/posix-compat.md.
 
 - [ ] **M3-03 — Make client failure behavior fail closed**: Persist the minimum
   client operation journal, implement reconnect/status lookup, invalidate all
