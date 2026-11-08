@@ -118,16 +118,16 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/raftstore/...` green in the container fleet: three-node election + commit in-memory mesh.
 
-- [ ] **M2-05 — Implement quorum write coordinator**: Perform chunk preparation
+- [x] **M2-05 — Implement quorum write coordinator**: Perform chunk preparation
   to a majority, build preconditioned commands, propose once, retain operation
   results, and prove retries cannot double-apply a mutation.
-  - **Phase**: M2 / blocked by M2-02, M2-04.
+  - **Phase**: M2 / done (2026-11-08).
   - **Files**: internal/volume/write.go, internal/client/operations.go,
     internal/volume/*_test.go.
   - **Tracker**: This repository.
-  - **Dependencies**: M2-02, M2-04.
+  - **Dependencies**: M2-02, M2-04 (done).
   - **Parallel**: No.
-  - **Verification**: go test -race ./internal/volume/... -run Quorum|Idempotency|Crash.
+  - **Verification**: `go test -race ./internal/volume/...` green in the container fleet (quorum receipts, majority refusal, idempotent retry).
 
 - [ ] **M2-06 — Implement read leases and lock state**: Add ReadIndex-backed
   leases, revocation/acknowledgement, session expiry, flock, and POSIX
