@@ -16,8 +16,9 @@ theme:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Development: development.md
   - Architecture:
-    - Overview: architecture.md
+    - Overview: architecture/index.md
     - Write path: architecture/write-path.md
     - Read and lease: architecture/read-and-lease.md
     - Membership and bootstrap: architecture/membership-and-bootstrap.md
@@ -26,6 +27,7 @@ nav:
   - Operating model: operating-model.md
   - Failure semantics: failure-semantics.md
   - POSIX compatibility: posix-compat.md
+  - Compatibility profile: compatibility.md
   - Known limitations: known-limitations.md
   - Status: spec/status.md
   - Security: security.md

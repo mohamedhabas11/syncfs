@@ -2,8 +2,8 @@
 
 Date: 2026-11-08
 Tracker repo: /Users/mohamed/syncfs
-Current baseline: Architecture, compatibility contract, operational model, and
-atomic implementation plan are written. No executable implementation exists.
+Current baseline: M1–M4 implemented (see `docs/spec/status.md`);
+M5 deferred under ADR-0001.
 
 ## Purpose
 
@@ -11,16 +11,16 @@ Deliver a small, reliable shared-directory system for HA services without
 drifting into a capacity-oriented distributed-storage project. Each milestone
 raises a measurable correctness threshold before adding scope.
 
-## Milestone Table
+## Milestone Table (as of 2026-11-08)
 
-| Order | Milestone | Status | Primary Owner | Acceptance Criteria | Verification |
-| --- | --- | --- | --- | --- | --- |
-| 0 | Architecture foundation | Done | Codex | Normative spec, compatibility profile, operations model, and task plan exist. | Documentation audit |
-| 1 | Strict replicated core | Next | SyncFS repository | Three-node metadata/chunk state machine preserves quorum-durable writes. | Deterministic three-node tests |
-| 2 | Linux shared mount | Planned | SyncFS repository | FUSE mount implements MVP POSIX profile and fail-closed cache behavior. | Linux FUSE suite |
-| 3 | HA operations and joining | Planned | SyncFS repository | Encrypted enrollment, learner catch-up, failover, repair, and replacement work. | Fault and recovery suite |
-| 4 | Workload qualification | Planned | Human + SyncFS repository | One named HA application passes shared-home and fault tests. | Application suite and benchmark |
-| 5 | Selective expansion | Later | Human decision | Add only evidence-backed capabilities after MVP stability. | ADR and milestone tests |
+| Order | Milestone | Status | Verification |
+| --- | --- | --- | --- |
+| 0 | Architecture foundation | Done | Documentation audit |
+| 1 | Strict replicated core | DONE (M1+M2) | Three-node mesh + unit suites |
+| 2 | Linux shared mount | DONE (M3) | FUSE mount + compat surface |
+| 3 | HA operations and joining | DONE (M4) | GC/membership/CLI/fault suites |
+| 4 | Workload qualification | DEFERRED (ADR-0001) | needs reference hardware |
+| 5 | Selective expansion | Later | ADR + milestone tests |
 
 ## Next Formal Milestone
 

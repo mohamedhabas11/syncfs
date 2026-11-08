@@ -38,24 +38,24 @@ or make `fsync` mean quorum durability.
        node A                 node B                 node C
 ```
 
-The three storage nodes should be independent failure domains with reliable
+Three storage nodes should be independent failure domains with reliable
 local SSD/NVMe storage and a low-latency LAN. Application hosts may be storage
 nodes, but do not need to be. The MVP has no proxying through NFS or SMB and no
 external database or control plane.
 
 ## Components
 
-| Component | Runs on | Responsibility |
+| Component | Status | Responsibility |
 | --- | --- | --- |
-| `syncfs mount` | Every application host | FUSE server, POSIX request adaptation, local client journal, coherent cache, and cache invalidation. |
-| `syncfs daemon` | Storage nodes | QUIC transport, Raft peer, metadata state machine, immutable chunk store, snapshot service, repair, and metrics. |
-| `syncfs admin` | Administrator workstation or storage node | Bootstrap, volume lifecycle, PKI/enrollment workflow, membership changes, status, and recovery actions. |
-| Volume Raft group | Storage voters | Orders namespace/metadata mutations, locks, membership-relevant volume state, and client lease changes. |
-| Chunk store | Every storage voter | Stores immutable, checksummed 64 KiB chunks and manifests on local ext4/XFS. |
+| `syncfs mount` | M3 skeleton + compat surface (in-memory) | FUSE server, POSIX adaptation, local client journal, coherent cache. |
+| `syncfs daemon` | storage core built; QUIC endpoints from M1-04 | QUIC transport, Raft peer, metadata state machine, chunk store, snapshot service, repair, metrics. |
+| `syncfs admin` | CLI skeleton (stubs documented) | Bootstrap, volume lifecycle, PKI/enrollment workflow, membership changes, status, recovery. |
+| Volume Raft group | M2-04 (3-node mesh tested) | Orders namespace/metadata mutations, locks, membership state, lease changes. |
+| Chunk store | M2-02 + GC (M4-01) | Immutable 64 KiB BLAKE3 chunks, Packs, Pebble index, epoch sweeps. |
 
-The first implementation ships one Go binary, `syncfs`, with these subcommands.
-It runs separate processes for storage and mount roles but does not require
-containers, Kubernetes, or a service mesh.
+One Go binary, `syncfs`, with `admin` / `daemon` / `mount` subcommands
+(`cmd/syncfs`). Separate processes for storage and mount roles; no
+containers, Kubernetes, or service mesh required in production.
 
 ## Why a volume has a leader
 
@@ -75,26 +75,6 @@ state is visible through a SyncFS mount.
 The critical invariant is: **a successful mutation has durable payload chunks
 on a majority of current voters and a committed metadata command that references
 those exact chunks.**
-
-```text
-FUSE write/rename/fsync
-        │
-        ▼
-client assigns stable operation ID and sends request to volume leader
-        │
-        ├─ for data: split changed ranges into 64 KiB copy-on-write chunks
-        │           and stream missing chunks to a storage majority
-        │
-        ├─ wait for local + follower durable chunk acknowledgements
-        │
-        ├─ revoke affected client read/directory leases
-        │
-        ├─ append one preconditioned metadata mutation to Raft
-        │
-        ├─ wait for Raft majority commit and local state-machine apply
-        │
-        └─ return success; invalidate remaining client cache entries
-```
 
 The leader combines independent requests for a short, bounded group-commit
 window. It never acknowledges a mutation before the quorum condition holds.
@@ -151,6 +131,16 @@ implementation does not hide dirty data behind writeback caching. That makes
 the consistency contract straightforward; bounded batching and chunked updates
 recover most of the small-write throughput without weakening visibility.
 
+```mermaid
+flowchart TD
+    Fresh[cache miss / expired lease] --> RI[Raft ReadIndex or lease revalidate]
+    RI -->|lease valid| Hit[serve userspace cache]
+    RI -->|no lease / write conflicts| Leader[leader grants ReadLease]
+    Leader --> Cached[cache + serve]
+    Leader --> Invalidate[conflicting write: invalidate + ack before commit]
+    Drop[control connection lost] --> DropAll[invalidate ALL leases<br/>block instead of stale reads]
+```
+
 ## Data model and local persistence
 
 Each volume has an immutable logical object graph:
@@ -184,21 +174,10 @@ On each storage node, the daemon owns a private state directory such as:
 ```
 
 The metadata/index store is an embedded, rebuildable local projection of the
-Raft log and snapshots; it is not an independent authority. The initial
-implementation uses Pebble for ordered metadata and chunk indexes, plus
-append-only pack files to avoid the many-small-files penalty of one host file
-per chunk. Its on-disk format is versioned and never shared directly with an
+Raft log and snapshots; it is not an independent authority. Pebble serves the
+ordered index; append-only pack files avoid the many-small-files penalty of
+one host file per chunk. Its on-disk format is versioned and never shared directly with an
 application.
-
-```mermaid
-flowchart TD
-    Fresh[cache miss / expired lease] --> RI[Raft ReadIndex or lease revalidate]
-    RI -->|lease valid| Hit[serve userspace cache]
-    RI -->|no lease / write conflicts| Leader[leader grants ReadLease]
-    Leader --> Cached[cache + serve]
-    Leader --> Invalidate[conflicting write: invalidate + ack before commit]
-    Drop[control connection lost] --> DropAll[invalidate ALL leases<br/>block instead of stale reads]
-```
 
 ## Failure model
 

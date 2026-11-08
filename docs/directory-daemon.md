@@ -4,7 +4,7 @@
 > daemon with no multi-node contract. It is retained for history only. The
 > current project is a FUSE-mediated, quorum-replicated shared-directory service;
 > use `.spec/technical_spec.md` and
-> [`docs/architecture.md`](architecture.md) as the implementation contract.
+> [`docs/architecture/`](architecture/index.md) as the implementation contract.
 
 > Do not treat as current spec. **Superseded (2026-11-08, D-001).** Status: **Draft v0.1.0** · Updated: 2026-11-08
 

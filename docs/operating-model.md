@@ -16,8 +16,9 @@ network path that routinely partitions is not HA.
 
 ## Bootstrap and volume lifecycle
 
-The CLI names below define the intended operator experience; they are not
-implemented yet.
+The operator-facing CLI names below are the operator experience planned for
+the control plane (the `cmd/syncfs` skeleton exists; see
+`docs/reference/cli.md` for what is stubbed today):
 
 ```text
 # On an offline administrator workstation

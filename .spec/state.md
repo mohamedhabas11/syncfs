@@ -2,23 +2,24 @@
 
 ## Current Stage
 
-Spec + Tasks complete; implementation has not started.
+Implemented through M4 (see `docs/spec/status.md` for evidence-linked
+milestone state). Foundation runs on Go 1.26; the reduced milestone set is
+M5 (deferred, ADR-0001) + release prep.
 
 ## Tracker Boundary
 
-/Users/mohamed/syncfs is the single durable tracker repository. It owns the
-mount contract, the storage protocol, the future binaries, and the readiness
-definition. There are no implementation repositories yet.
+/Users/mohamed/syncfs is the single durable tracker repository.
 
 ## Milestone Table
 
 | Milestone | Status | Owner / Lane | Dependencies | Verification |
 | --- | --- | --- | --- | --- |
-| Foundation architecture and MVP contract | done | Codex | Repository orientation and design research | Markdown/link review and git diff --check |
-| Repository/toolchain baseline | ready | Codex | Go 1.25+ toolchain | go test ./... |
-| Strict single-volume replicated filesystem | ready | Codex | Protocol, WAL, metadata, chunk store, FUSE | Three-node integration test |
-| HA, enrollment, and recovery | blocked | Codex | Strict-volume milestone | Partition, failover, learner promotion tests |
-| Workload qualification | blocked | Human + Codex | HA milestone and target service deployment | Application HA suite and benchmark evidence |
+| Phase 0 foundation | done | research/00 + D-001 | Repo orientation + research | docs audit |
+| M1 (toolchain+protocols+auth+QUIC) | done | tasks M1-01..04 | Phase 0 | go test/buf/fleet (evidence in git log) |
+| M2 (durable replicated core) | done | tasks M2-01..06 | M1 | three-node mesh + unit suites |
+| M3 (FUSE mount + compatibility + client failure) | done | tasks M3-01..03 | M2 | flagfleet smoke + compat trace |
+| M4 (HA/operations/alert) | done | tasks M4-01..04 | M2+M3 | GC/membership/CLI/fault suites |
+| M5 (workload qualification) | deferred | ADR-0001 | reference hardware + target app | human + workloads suite |
 
 ## Dependency Map
 
@@ -32,17 +33,17 @@ definition. There are no implementation repositories yet.
 
 ## Active Deliverables
 
-- Research: .spec/research.md
+- Research: .spec/research.md + research/07 (fork reconciliation)
 - Technical Spec: .spec/technical_spec.md
 - Tasks: .spec/tasks.md
 - Roadmap: .spec/roadmap.md
+- Status: docs/spec/status.md, PROGRESS.md
 
 ## Current Crawl Target
 
 - Target: syncfs repository root
-- Domain: Distributed filesystem architecture
+- Domain: Distributed filesystem architecture (implemented)
 - Tracker Repo: /Users/mohamed/syncfs
-- Next Reroute: First implementation task, M1-01
 
 ## Decisions
 
@@ -60,29 +61,23 @@ definition. There are no implementation repositories yet.
 
 ## Open Questions
 
-- **Target qualification workload**: Which exact application/version should be
-  the first compatibility target? This affects the integration suite, not the
-  foundational safety model.
-- **Identity integration**: Should production installs use only the built-in
-  offline CA workflow, or also an existing enterprise PKI? This affects CLI and
-  certificate adapter scope.
-- **At-rest encryption**: Is LUKS/dm-crypt sufficient for the first deployment,
-  or is application-layer/key-manager integration required? The answer changes
-  the security milestone.
+(Defaults adopted; see `.spec/technical_spec.md` §14.)
+
+- **Target qualification workload**: settled truthfully as "unspecified" pending
+  HUMAN_TODO (no support claims).
+- **Identity integration**: offline CA is sufficient for MVP; enterprise PKI is
+  a post-MVP adapter.
+- **At-rest encryption**: LUKS/dm-crypt is the accepted MVP boundary.
 
 ## Verification Status
 
-- git diff --check: Passed - checked the tracked diff and every new document with
-  no-index whitespace validation.
-- Markdown link audit: Passed - all local Markdown targets resolve and fenced
-  block delimiters are balanced.
-- go test ./...: Blocked - no Go module or implementation exists; the local
-  Go 1.15.6 toolchain is below the planned Go 1.26 baseline.
-- Phase-0 closure (2026-11-08): Design fork closed by D-001 (research/07); ARCHIVE banners applied to camp-B files; technical corrections applied per research/00-synthesis-phase0-closure.md. Phase 0 = "foundation complete, implementation not started"; remaining gate boxes (Go 1.26 pins, M1-01) move to M1 exit criteria.
+- git diff --check: Passed
+- markdown/mkdocs links: Passed (`mkdocs build --strict` green)
+- go build ./... · go vet ./... · go test -race ./... : all green (18 pkgs)
 
 ## Handoff Notes
 
-The earlier untracked directory-daemon documents have been explicitly marked as
-historical. They use a watcher-after-write model and are not safe to implement
-for this shared-directory requirement. Start implementation from
-.spec/tasks.md, keeping the durable-write invariant intact.
+The earlier directory-daemon documents are archived historical (D-001).
+Wiki history lives in research/ + .spec/research.md. Next work: FUSE-backed
+version of the volume/coordinator wiring, then M5 qualification when a target
+workload and reference hardware exist.

@@ -24,16 +24,20 @@ requirement, not an implementation detail.
 
 ## Status
 
-The project is in the foundation/specification stage. There is no implementation
-yet. The durable engineering plan is in [`.spec/`](.spec/):
+Pre-1.0, not production ready. Foundation (M1–M4) is implemented and green
+(`go build ./...`, `go vet ./...`, `go test -race ./...` — 18 packages);
+qualification (M5) is deferred pending reference hardware (ADR-0001).
+Per-milestone state with evidence: [`docs/spec/status.md`](docs/spec/status.md).
+
+The durable engineering record sits in [`.spec/`](.spec/):
 
 | Document | Purpose |
 | --- | --- |
 | [`.spec/technical_spec.md`](.spec/technical_spec.md) | Normative MVP contract, storage layout, protocol, failure model, and package boundaries. |
-| [`.spec/tasks.md`](.spec/tasks.md) | Atomic implementation tasks and verification gates. |
+| [`.spec/tasks.md`](.spec/tasks.md) | Atomic implementation tasks and verification gates (current tick state). |
 | [`.spec/roadmap.md`](.spec/roadmap.md) | Milestones beyond the first usable cluster. |
 | [`docs/architecture.md`](docs/architecture.md) | Engineer-facing architecture overview and request flows. |
-| [`docs/compatibility.md`](docs/compatibility.md) | Explicit POSIX compatibility profile and intentional exclusions. |
+| [`docs/posix-compat.md`](docs/posix-compat.md) | POSIX surface matrix (operation \| status \| test). |
 | [`docs/operating-model.md`](docs/operating-model.md) | Deployment, security, joining, and operational model. |
 
 ## Core contract

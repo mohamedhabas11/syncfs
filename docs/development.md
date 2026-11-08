@@ -21,6 +21,7 @@ for spec/docs work only — FUSE tests cannot run on macOS (see
 | `go.etcd.io/etcd/raft/v3` | v3.5.35 | Apache-2.0 | Stable (avoid `v3.6.0-alpha.0`) |
 | `github.com/quic-go/quic-go` | v0.65.0 | MIT | ≥ v0.62 required for `SetPriority`; `Allow0RTT=false` default |
 | `github.com/cockroachdb/pebble` | v1.1.5 | BSD-3 | LSM; `WriteOptions.Sync` policy required (M2-02) |
+| `lukechampine.com/blake3` | v1.4.1 | BSD-3 | content addressing (M2-02; see DECISIONS.md) |
 | `google.golang.org/protobuf` | v1.36.12 | BSD-3 | Stable (avoid `v1.37.0-rc.1`) |
 
 - Exact pins live in `go.mod`/`go.sum`. `go.sum` is committed.
@@ -57,8 +58,9 @@ docker compose up -d && docker compose exec node-b go version  # fleet up
 ```
 
 Later milestones (control-plane enrollment, data-plane chunk transfer,
-FUSE mount) run the daemon inside these same three containers — add
-`--privileged` for FUSE when M3 lands. See `.spec/tasks.md` M1-03.
+FUSE mount) run the daemon inside these same three containers. `/dev/fuse`
+is exposed to every node (devices + SYS_ADMIN) and `fusermount` is installed
+by the fleet Dockerfile. See `.spec/tasks.md` M1-03.
 
 ## CI
 
@@ -72,5 +74,5 @@ FUSE gate that runs once `internal/fusefs/` exists (M3-01).
 - M1-01 verification: `go version`, `go mod verify`, `go test ./...`,
   `go vet ./...` — all with Go 1.26.0 on Linux CI. Local macOS Go
   (1.15.6 in this checkout's history) is NOT verification evidence.
-- FUSE and network-fault tests (M3+) run only on Linux CI
-  (`TestFUSE`, `TestFault`).
+- FUSE and network-fault tests (M3+) run on the container fleet
+  (`TestFUSE`, `TestFault`) — no Linux host required.
