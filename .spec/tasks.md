@@ -129,16 +129,16 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/volume/...` green in the container fleet (quorum receipts, majority refusal, idempotent retry).
 
-- [ ] **M2-06 — Implement read leases and lock state**: Add ReadIndex-backed
+- [x] **M2-06 — Implement read leases and lock state**: Add ReadIndex-backed
   leases, revocation/acknowledgement, session expiry, flock, and POSIX
   byte-range lock command handling.
-  - **Phase**: M2 / blocked by M2-04.
+  - **Phase**: M2 / done (2026-11-08).
   - **Files**: internal/volume/lease/*, internal/metadata/locks/*,
     internal/client/cache/*.
   - **Tracker**: This repository.
-  - **Dependencies**: M2-04 and stable operation protocol from M1-02.
+  - **Dependencies**: M2-04 (done).
   - **Parallel**: No.
-  - **Verification**: go test -race ./internal/volume/... ./internal/metadata/... -run Lease|Lock.
+  - **Verification**: `go test -race ./internal/...` green in the container fleet (lease grant/revoke/ack/expiry, wait-clear bounds, locks try/conflict/session expiry, cache lease-guarded put).
 
 - [ ] **M3-01 — Implement the strict FUSE mount skeleton**: Mount a volume on
   Linux with direct-I/O mutable handles, zero/short metadata cache TTLs, caller

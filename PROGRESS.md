@@ -13,3 +13,4 @@ Autonomous build log. One line per milestone: id, commit, commands, result.
 | 2026-11-08 | M2-03 metadata state machine | TBD | go test ./internal/metadata/... -race (fleet) | PASS |
 | 2026-11-08 | M2-04 raft driver + 3-node mesh | TBD | go test ./internal/raftstore/... -race (fleet) | PASS |
 | 2026-11-08 | M2-05 quorum write coordinator | TBD | go test ./internal/volume/... -race (fleet) | PASS |
+| 2026-11-08 | M2-06 leases + locks + cache | TBD | go test ./internal/... -race (fleet) | PASS |
