@@ -63,15 +63,13 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: Yes, Protocol lane.
   - **Verification**: `buf lint` clean, `buf breaking --against api/baseline` clean, `go test ./api/...` green (incl. `-race` in the container fleet) with Go 1.26.
 
-- [ ] **M1-03 — Build identity, roles, and enrollment primitives**: Implement
-  cluster/node/client certificate validation, cluster-ID binding, role checks,
-  one-time enrollment records, secret redaction, and test-only PKI helpers.
-  - **Phase**: M1 / ready after M1-01.
+- [x] **M1-03 — Build identity, roles, and enrollment primitives**: cluster/node/client certificate validation, cluster-ID binding, role checks, one-time enrollment records, secret redaction, and test-only PKI helpers.
+  - **Phase**: M1 / done (2026-11-08).
   - **Files**: internal/auth/*, internal/testkit/pki/*.
   - **Tracker**: This repository.
-  - **Dependencies**: M1-01; stable identity messages from M1-02 before wire integration.
-  - **Parallel**: Yes, Operations lane until protocol bindings are needed.
-  - **Verification**: go test ./internal/auth/... -race.
+  - **Dependencies**: M1-01 (done).
+  - **Parallel**: No.
+  - **Verification**: `go test ./internal/auth/... -race` green in the container fleet (CA issue/verify, SAN profile, enrollment single-use, redaction, roles).
 
 - [ ] **M1-04 — Implement QUIC session and stream framing**: Establish mTLS
   QUIC with syncfs/1, peer role validation, bounded Protobuf framing, stream
