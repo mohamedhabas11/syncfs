@@ -1,0 +1,38 @@
+syntax = "proto3";
+package syncfs.api.v1;
+option go_package = "github.com/mohamedhabas11/syncfs/api/v1/gen;syncfsapi";
+
+// Shared wire types: principal identity, operation outcomes.
+// Envelope fields cluster_id/protocol_version/request_id/principal_type/role/san_id
+// are the FIRST six fields of every client-facing request (Hello, Command, GetOperation);
+// principals are flat envelope fields, not a oneof (SPEC_REVISION WI-001).
+
+enum PrincipalType {
+  PRINCIPAL_TYPE_UNSPECIFIED = 0;
+  NODE = 1;
+  CLIENT = 2;
+  ADMIN = 3;
+}
+
+enum OperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  UNKNOWN = 1;
+  COMMITTED = 2;
+  REJECTED = 3;
+}
+
+message WriteResult { bytes new_manifest = 1; }
+
+message ErrorResult {
+  string code = 1;
+  string message = 2;
+}
+
+message OperationResult {
+  OperationState state = 1;
+  uint64 raft_index = 2;
+  oneof result {
+    WriteResult write = 3;
+    ErrorResult error = 4;
+  }
+}

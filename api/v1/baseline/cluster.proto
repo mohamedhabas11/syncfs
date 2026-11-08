@@ -1,0 +1,67 @@
+syntax = "proto3";
+package syncfs.api.v1;
+option go_package = "github.com/mohamedhabas11/syncfs/api/v1/gen;syncfsapi";
+
+import "common.proto";
+
+// Hello/Auth on QUIC ALPN syncfs/1 (spec 8.1). 0-RTT stays disabled;
+// a reconnect must complete authentication before any read or mutation.
+message Hello {
+  bytes cluster_id = 1;
+  uint32 protocol_version = 2;
+  uint64 request_id = 3;
+  PrincipalType principal_type = 4;
+  uint32 role = 5;
+  string san_id = 6;
+  bytes nonce = 7;
+  string alpn = 8;  // MUST be exactly "syncfs/1"
+}
+
+message HelloAck {
+  bytes cluster_id = 1;
+  uint32 protocol_version = 2;
+  uint64 server_time_unix_ms = 3;
+  string alpn = 4;  // MUST be exactly "syncfs/1"
+}
+
+// Raft envelope: dedicated streams, never interleaved with chunk bytes.
+// Membership tokens carry cluster binding; peer auth is mTLS.
+message RaftMessage {
+  bytes cluster_id = 1;
+  uint64 term = 2;
+  uint64 index = 3;
+  enum Type {
+    RAFT_TYPE_UNSPECIFIED = 0;
+    APPEND_ENTRIES = 1;
+    REQUEST_VOTE = 2;
+    READ_INDEX = 3;
+  }
+  Type type = 4;
+}
+
+// Snapshot envelope: resumable transfer, verified hash-by-hash before
+// atomic activation (spec 8.5). Envelope bytes are control-sized; chunk
+// bytes ride dedicated streams.
+message SnapshotHeader {
+  bytes cluster_id = 1;
+  uint32 protocol_version = 2;
+  uint32 format_version = 3;
+  uint64 raft_index = 4;
+  uint64 raft_term = 5;
+  uint64 applied_index = 6;
+  uint64 chunk_manifest_count = 7;
+  bytes checksum = 8;  // BLAKE3-256 of the metadata checkpoint
+}
+
+message NodeRef {
+  bytes node_id = 1;
+  string san_id = 2;
+}
+
+// At most one voters change in flight; learner MUST NOT count toward quorum.
+message MembershipPlan {
+  repeated NodeRef old_voters = 1;
+  repeated NodeRef new_voters = 2;
+  uint64 op = 3;
+  uint64 prev_index = 4;
+}

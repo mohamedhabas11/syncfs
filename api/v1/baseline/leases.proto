@@ -1,0 +1,39 @@
+syntax = "proto3";
+package syncfs.api.v1;
+option go_package = "github.com/mohamedhabas11/syncfs/api/v1/gen;syncfsapi";
+
+// Leases. THREE distinct kinds MUST NOT be conflated (spec 8.3):
+// (a) Raft leader lease (ReadIndex clock caveat, ReadOnlySafe),
+// (b) client ReadLease (userspace cache authority),
+// (c) POSIX lock lease (state-machine record).
+
+enum LeaseKind {
+  LEASE_KIND_UNSPECIFIED = 0;
+  RAFT_LEADER = 1;
+  CLIENT_READ = 2;
+  POSIX_LOCK = 3;
+}
+
+message Lease {
+  bytes lease_id = 1;
+  LeaseKind kind = 2;
+  bytes inode_id = 3;
+  uint32 generation = 4;
+  uint64 ttl_ms = 5;
+}
+
+message LeaseAck { bytes lease_id = 1; }
+
+enum LockFamily {
+  LOCK_FAMILY_UNSPECIFIED = 0;
+  FLOCK = 1;
+  FCNTL = 2;
+  OFD = 3;
+}
+
+enum LockMode {
+  LOCK_MODE_UNSPECIFIED = 0;
+  EXCLUSIVE = 1;
+  SHARED = 2;
+  UNLOCK = 3;
+}

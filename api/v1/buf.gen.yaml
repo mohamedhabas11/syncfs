@@ -1,0 +1,7 @@
+version: v2
+modules:
+  - path: api/v1
+plugins:
+  - local: protoc-gen-go
+    out: api/v1/gen
+    opt: paths=source_relative

@@ -1,0 +1,97 @@
+syntax = "proto3";
+package syncfs.api.v1;
+option go_package = "github.com/mohamedhabas11/syncfs/api/v1/gen;syncfsapi";
+
+import "common.proto";
+
+enum CommandKind {
+  COMMAND_KIND_UNSPECIFIED = 0;
+  CREATE = 1;
+  WRITE_RANGES = 2;
+  TRUNCATE = 3;
+  LINK = 4;
+  UNLINK = 5;
+  RENAME = 6;
+  SET_ATTR = 7;
+  SET_XATTR = 8;
+  SET_ACL = 9;
+  LOCK_GRANT = 10;
+  LOCK_RELEASE = 11;
+  VOLUME_CONFIG = 12;
+  MEMBERSHIP_PLAN = 13;
+}
+
+message ExpectedVersion {
+  bytes inode_id = 1;
+  uint32 expected_revision = 2;
+}
+
+message PreparedChunkReceipt {
+  bytes chunk_id = 1;
+  bytes peer_id = 2;
+  uint64 store_generation = 3;
+  uint64 verified_bytes = 4;
+}
+
+// Chunk bytes NEVER appear here — only hashes/receipts (spec 8.2). A write
+// spanning an existing chunk rewrites that one 64KiB chunk; whole-file copies
+// never happen. Payload message types are oneof members below.
+message CreatePayload { bytes parent_inode_id = 1; string name = 2; }
+message WriteRangesPayload {
+  bytes inode_id = 1;
+  bytes base_manifest = 2;
+  bytes new_manifest = 3;
+  // Ranges reference chunks by hash only; receipt array below proves majority durability.
+}
+message TruncatePayload { bytes inode_id = 1; uint64 size = 2; }
+message LinkPayload { bytes parent_inode_id = 1; string name = 2; bytes target_inode_id = 3; }
+message UnlinkPayload { bytes parent_inode_id = 1; string name = 2; }
+message RenamePayload { bytes src_parent = 1; string src_name = 2; bytes dst_parent = 3; string dst_name = 4; }
+message SetAttrPayload { bytes inode_id = 1; uint32 mode = 2; uint32 uid = 3; uint32 gid = 4; }
+message SetXattrPayload { bytes inode_id = 1; string key = 2; bytes value = 3; }
+message SetACLPayload { bytes inode_id = 1; repeated string acl_entries = 2; }
+message LockGrantPayload { bytes inode_id = 1; uint32 family = 2; string owner_key = 3; uint64 range_start = 4; uint64 range_end = 5; uint32 mode = 6; }
+message LockReleasePayload { bytes inode_id = 1; string owner_key = 2; }
+message VolumeConfigPayload { bytes volume_id = 1; uint64 quota_bytes = 2; uint64 max_file_bytes = 3; }
+message MembershipPlanPayload { bytes plan = 1; }
+
+// Client command: envelope fields 1-6, then preconditions + kind + payload.
+// operation_id (128-bit, stable) dedups retries; never a second mutation.
+message Command {
+  bytes cluster_id = 1;
+  uint32 protocol_version = 2;
+  uint64 request_id = 3;
+  PrincipalType principal_type = 4;
+  uint32 role = 5;
+  string san_id = 6;
+  bytes operation_id = 7;
+  repeated ExpectedVersion preconditions = 8;
+  CommandKind kind = 9;
+  repeated PreparedChunkReceipt prepared_chunks = 10;
+  repeated bytes required_lease_acks = 11;
+  oneof payload {
+    CreatePayload create = 12;
+    WriteRangesPayload write_ranges = 13;
+    TruncatePayload truncate = 14;
+    LinkPayload link = 15;
+    UnlinkPayload unlink = 16;
+    RenamePayload rename = 17;
+    SetAttrPayload set_attr = 18;
+    SetXattrPayload set_xattr = 19;
+    SetACLPayload set_acl = 20;
+    LockGrantPayload lock_grant = 21;
+    LockReleasePayload lock_release = 22;
+    VolumeConfigPayload volume_config = 23;
+    MembershipPlanPayload membership_plan = 24;
+  }
+}
+
+message GetOperation {
+  bytes cluster_id = 1;
+  uint32 protocol_version = 2;
+  uint64 request_id = 3;
+  PrincipalType principal_type = 4;
+  uint32 role = 5;
+  string san_id = 6;
+  bytes operation_id = 7;
+}
