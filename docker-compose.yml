@@ -3,6 +3,7 @@
 # DATA is NOT shared: each node owns a private writable volume /var/lib/syncfs
 # (independent failure domain, like a real deployment — quorum, corruption,
 # and repair tests are meaningless without it).
+# Go module/build caches are shared volumes so iterations stay fast.
 #
 # Start it:
 #   docker compose run --rm node-a go test ./... -count=1 -race
@@ -17,6 +18,8 @@ services:
     volumes:
       - .:/src:ro
       - node-a-data:/var/lib/syncfs
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache
     command: go test ./... -count=1 -race
 
   node-b:
@@ -25,6 +28,8 @@ services:
     volumes:
       - .:/src:ro
       - node-b-data:/var/lib/syncfs
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache
     command: go test ./... -count=1 -race
 
   node-c:
@@ -33,9 +38,13 @@ services:
     volumes:
       - .:/src:ro
       - node-c-data:/var/lib/syncfs
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache
     command: go test ./... -count=1 -race
 
 volumes:
   node-a-data:
   node-b-data:
   node-c-data:
+  go-mod-cache:
+  go-build-cache:

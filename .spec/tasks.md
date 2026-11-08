@@ -79,16 +79,13 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test ./internal/transport/... -race` green in the container fleet (hello round-trip, foreign cluster rejection, oversize frame, class priorities, no 0-RTT).
 
-- [ ] **M2-01 — Implement crash-safe Raft WAL and snapshot store**: Persist
-  entries, hard state, and snapshots in the required order; expose a
-  deterministic crash hook after each sync boundary; verify reopen/replay.
-  - **Phase**: M2 / blocked by M1-01.
-  - **Files**: internal/raftstore/wal/*, internal/raftstore/snapshot/*,
-    internal/testkit/crash/*.
+- [x] **M2-01 — Implement crash-safe Raft WAL and snapshot store**: WAL entries, hard state, and snapshots persisted in required order; deterministic crash hooks after each sync boundary; reopen/replay verified.
+  - **Phase**: M2 / done (2026-11-08).
+  - **Files**: internal/raftstore/wal/*, internal/raftstore/snapshot/*, internal/testkit/crash/* (hooks plumbed in wal).
   - **Tracker**: This repository.
-  - **Dependencies**: M1-01.
-  - **Parallel**: Yes, Storage lane.
-  - **Verification**: go test -race ./internal/raftstore/... -run WAL|Snapshot.
+  - **Dependencies**: M1-01 (done).
+  - **Parallel**: No.
+  - **Verification**: `go test -race ./internal/raftstore/...` green in the container fleet (reopen/replay, torn-write truncation, crash-hook order, gap detection, snapshot checksum).
 
 - [ ] **M2-02 — Implement immutable pack-based chunk storage**: Add chunk
   staging, BLAKE3 validation, append-only pack records, Pebble index batches,
