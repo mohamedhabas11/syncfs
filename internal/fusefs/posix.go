@@ -12,6 +12,9 @@ import (
 
 // createNode builds a root-level child of the given kind.
 func (h *Handler) createNode(kind int, name string, mode uint32, uid, gid uint32) (*NodeState, syscall.Errno) {
+	if e := validName(name); e != 0 {
+		return nil, e
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, dup := h.root.children[name]; dup {
@@ -54,6 +57,8 @@ func (h *Handler) ReadFile(name string) ([]byte, syscall.Errno) {
 }
 
 // WriteFile writes at offset, growing as needed (append = write at EOF).
+// Fail-closed: if the coordinator seam errors, the write is rolled back and
+// EIO is returned (never a false durable receipt).
 func (h *Handler) WriteFile(name string, at int64, data []byte) (uint32, syscall.Errno) {
 	h.mu.RLock()
 	ns, ok := h.root.children[name]
@@ -66,21 +71,28 @@ func (h *Handler) WriteFile(name string, at int64, data []byte) (uint32, syscall
 	if ns.kind != KFile {
 		return 0, syscall.EISDIR
 	}
-	if at < 0 {
+	if at < 0 || at > 1<<62 {
 		return 0, syscall.EINVAL
 	}
+	if int64(len(data)) > 1<<62-at {
+		return 0, syscall.EFBIG
+	}
+	prevData := append([]byte(nil), ns.data...)
+	prevMtime := ns.mtime
 	end := at + int64(len(data))
 	if end > int64(len(ns.data)) {
 		ns.data = append(ns.data, make([]byte, end-int64(len(ns.data)))...)
 	}
 	copy(ns.data[at:end], data)
 	ns.mtime = time.Now()
-	// coordinator seam: the coordinator persists before ack (M5); the mount
-	// stays fail-closed by refusing writes that return an error here.
 	if h.syncer == nil {
 		h.syncer = NoopSyncer{}
 	}
-	_ = h.syncer.OnWrite(name, at, append([]byte(nil), data...))
+	if err := h.syncer.OnWrite(name, at, append([]byte(nil), data...)); err != nil {
+		ns.data = prevData
+		ns.mtime = prevMtime
+		return 0, syscall.EIO
+	}
 	return uint32(len(data)), syscall.Errno(0)
 }
 
@@ -132,16 +144,89 @@ func (h *Handler) Names() ([]string, syscall.Errno) {
 	return out, syscall.Errno(0)
 }
 
+// validName rejects empty, dot, and slash-bearing names (fail closed).
+func validName(name string) syscall.Errno {
+	if name == "" || name == "." || name == ".." {
+		return syscall.EINVAL
+	}
+	for i := 0; i < len(name); i++ {
+		if name[i] == '/' {
+			return syscall.EINVAL
+		}
+	}
+	return syscall.Errno(0)
+}
+
 // Rename moves a child within the root atomically.
 func (h *Handler) Rename(src, dst string) syscall.Errno {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if e := validName(src); e != 0 {
+		return e
+	}
+	if e := validName(dst); e != 0 {
+		return e
+	}
 	ns, ok := h.root.children[src]
 	if !ok {
 		return syscall.ENOENT
 	}
 	delete(h.root.children, src)
 	h.root.children[dst] = ns
+	return syscall.Errno(0)
+}
+
+// Link creates a hard link: a second name for the same inode. Directories
+// cannot be hard-linked (EPERM per POSIX).
+func (h *Handler) Link(existing, newName string) syscall.Errno {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ns, ok := h.root.children[existing]
+	if !ok {
+		return syscall.ENOENT
+	}
+	if ns.kind == KDir {
+		return syscall.EPERM
+	}
+	if _, dup := h.root.children[newName]; dup {
+		return syscall.EEXIST
+	}
+	if e := validName(newName); e != 0 {
+		return e
+	}
+	h.root.children[newName] = ns
+	return syscall.Errno(0)
+}
+
+// Readlink returns the symlink target.
+func (h *Handler) Readlink(name string) (string, syscall.Errno) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ns, ok := h.root.children[name]
+	if !ok {
+		return "", syscall.ENOENT
+	}
+	if ns.kind != KSymlink {
+		return "", syscall.EINVAL
+	}
+	return ns.link, syscall.Errno(0)
+}
+
+// FsyncDir marks a directory durable (coordinator seam for M5). Not-found
+// returns ENOENT; files return ENOTDIR.
+func (h *Handler) FsyncDir(name string) syscall.Errno {
+	h.mu.RLock()
+	ns, ok := h.root.children[name]
+	h.mu.RUnlock()
+	if !ok {
+		return syscall.ENOENT
+	}
+	if ns.kind != KDir {
+		return syscall.ENOTDIR
+	}
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	ns.mtime = time.Now()
 	return syscall.Errno(0)
 }
 

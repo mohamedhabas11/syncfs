@@ -3,9 +3,9 @@
 package fusefs
 
 import (
-	"os"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Syncer is the coordinator seam M5 wires through the volume coordinator.
@@ -54,7 +54,7 @@ func (h *Handler) SetXattr(name string, key string, value []byte) syscall.Errno 
 		ns.xattrs = map[string][]byte{}
 	}
 	ns.xattrs[key] = append([]byte(nil), value...)
-	ns.mtime = ns.mtime
+	ns.mtime = time.Now()
 	return syscall.Errno(0)
 }
 
@@ -77,5 +77,3 @@ func (h *Handler) GetXattr(name string, key string) ([]byte, syscall.Errno) {
 	}
 	return append([]byte(nil), v...), syscall.Errno(0)
 }
-
-var _ = os.Stdout

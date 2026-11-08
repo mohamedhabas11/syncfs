@@ -11,7 +11,7 @@ func TestFUSEmountSmoke(t *testing.T) {
 	}
 	target := t.TempDir() + "-mount"
 	_ = os.Mkdir(target, 0755)
-	server, err := KernelMount(target, &Handler{})
+	server, err := KernelMount(target, NewHandler("smoke"))
 	if err != nil {
 		t.Fatalf("mount: %v", err)
 	}
