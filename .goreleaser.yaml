@@ -1,0 +1,32 @@
+# GoReleaser (v0.1.0 prep — do not run locally; CI triggers on tag pushes)
+
+version: 2
+
+builds:
+  - main: ./cmd/syncfs
+    binary: syncfs
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w -X main.version={{.Version}}]
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - artifacts: all
+    commands:
+      - artifact:
+          name_template: "{{ .Binary }}_{{ .Version }}.spdx.json"
+
+release:
+  draft: true
+  prerelease: auto

@@ -267,5 +267,5 @@ internal/testkit/       deterministic transport, disk faults, cluster harness
 ```
 
 The normative protocol and acceptance criteria live in
-[`.spec/technical_spec.md`](../.spec/technical_spec.md). This document is the
+`.spec/technical_spec.md`. This document is the
 architecture map, not a replacement for its exact invariants.

@@ -1,0 +1,33 @@
+site_name: SyncFS
+site_description: Linux-only replicated POSIX shared-directory service for small HA deployments.
+repo_url: https://github.com/mohamedhabas11/syncfs
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: pymdownx.superfences.fence_code_format
+  - pymdownx.snippets:
+      check_paths: true
+plugins:
+  - search
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Architecture:
+    - Overview: architecture.md
+    - Write path: architecture/write-path.md
+    - Read and lease: architecture/read-and-lease.md
+    - Membership and bootstrap: architecture/membership-and-bootstrap.md
+    - Storage: architecture/storage.md
+    - Transport: architecture/transport.md
+  - Operating model: operating-model.md
+  - Failure semantics: failure-semantics.md
+  - POSIX compatibility: posix-compat.md
+  - Known limitations: known-limitations.md
+  - Status: spec/status.md
+  - Security: security.md
+  - Reference:
+    - CLI and config: reference/cli.md

@@ -2,11 +2,12 @@
 /bin/
 /syncfs
 /bin/
+site/
 
 # Test binaries
 *.test
 *.out
-*.txt
+coverage.out
 *.prof
 
 # Coverage

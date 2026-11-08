@@ -14,27 +14,24 @@ Autonomous build log. One line per milestone: id, commit, commands, result.
 | 2026-11-08 | M2-04 raft driver + 3-node mesh | c89af8c | go test ./internal/raftstore/... -race (fleet) | PASS |
 | 2026-11-08 | M2-05 quorum write coordinator | 9ae7f7b | go test ./internal/volume/... -race (fleet) | PASS |
 | 2026-11-08 | M2-06 leases + locks + cache | c8fc0eb | go test ./... -count=1 -race (fleet), go build/vet ./... (host go1.26.0) | PASS |
-| 2026-11-08 | M3-02 POSIX compat surface | TBD | go test ./internal/fusefs/... -race (fleet) | PASS |
-| 2026-11-08 | M3-01 FUSE skeleton (partial) | e133cab | mermaid diagrams; TestFUSEmountSmoke green in container | PARTIAL |
+| 2026-11-08 | M3-01 FUSE mount | eba1e4e | go test ./internal/fusefs/... -race (fleet) | PASS |
+| 2026-11-08 | M3-02 POSIX compat surface | 82c4761 | go test ./internal/fusefs/... -race (fleet) | PASS |
+| 2026-11-08 | M3-03 client failure semantics | 175e4e3 | go test ./internal/client/... -race (fleet) | PASS |
+| 2026-11-08 | M4-01 snapshots+GC | 06d7450 | go test ./internal/chunkstore/gc/... -race (fleet) | PASS |
+| 2026-11-08 | M4-02 membership replacement | 0c488d5 | go test ./internal/admin/member/... -race (fleet) | PASS |
+| 2026-11-08 | M4-03 CLI + systemd | d5371f3 | go test ./cmd/... -race (fleet) | PASS |
+| 2026-11-08 | M4-04 fault harness | 66bd4db | go test ./internal/testkit/... -race (fleet) | PASS |
+| 2026-11-08 | M5 qualification | — | — | DEFERRED (ADR-0001: needs reference hardware) |
+| 2026-11-08 | Release prep + docs site | TBD | mkdocs build --strict | PASS |
 
 ## Spec-sheet progress tracking
 
 | Spec sheet | Status | Next |
 | --- | --- | --- |
-| diagrams/docs | architecture.md write-path + read/lease flows; operating-model bootstrap joining (mermaid) | compat matrix mermaid pending M3-02 |
+| diagrams/docs | architecture.md write-path + read/lease flows; operating-model bootstrap joining (mermaid) + docssite architecture/ pages | compat matrix done (docs/posix-compat.md) |
 | PROGRESS.md | whole-build + this file | one line per milestone continues |
 | spec reconciliation | D-001/Camp A adopted; Camp B archived | — |
-| .spec/tasks.md | M3-01 honest OPEN (skeleton only) | full skeleton then M3-02 |
-
-## M3-01 honest status (2026-11-08)
-
-Delivered: mount skeleton (go-fuse v2, strict `AllowOther=false`, FsName syncfs),
-real kernel-mount smoke test in the fleet (`TestFUSEmountSmoke` PASS),
-Dockerfile (golang:1.26-alpine + fusermount + gcc) + per-node /dev/fuse wiring.
-NOT yet delivered: caller-credential extraction in Lookups, direct-I/O
-mutable-handle policy, exact Linux errno mapping table, full FUSE lifecycle
-(unmount flushing), oplogging of xattr/ACL namespaces. M3-01 checkbox remains
-OPEN; the skeleton is a partial step. M3-02 (compatibility profile) is next.
+| .spec/tasks.md | M3-01 + M3-02 + M3-03 + M4 × ticked; M5 open per ADR-0001 | — |
 
 ## Final (autonomous mode)
 
