@@ -1,0 +1,30 @@
+# Build output
+/bin/
+/syncfs
+/bin/
+
+# Test binaries
+*.test
+*.out
+*.txt
+*.prof
+
+# Coverage
+coverage.out
+coverage.html
+htmlcov/
+
+# Go module cache / vendoring
+vendor/
+
+# Local state (never commit)
+/var/
+*.join
+*.bundle
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

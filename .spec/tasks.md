@@ -46,17 +46,14 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: git diff --check and Markdown link audit.
 
-- [ ] **M1-01 — Establish a reproducible Go baseline**: Add go.mod, pin Go
-  1.25+, choose exact reviewed module versions, add go.sum, .gitignore,
-  Makefile, CI matrix, lint/vet targets, license/SBOM policy, and a Linux
-  developer setup document.
-  - **Phase**: M1 / ready.
+- [x] **M1-01 — Establish a reproducible Go baseline**: go.mod (Go 1.26.0, `github.com/mohamedhabas11/syncfs`), pinned deps (go-fuse/v2.12.1, raft/v3.5.35, quic-go/v0.65.0, pebble/v1.1.5, protobuf/v1.36.12), go.sum committed, .gitignore, Makefile (mod-verify/test/vet/lint/build), CI matrix `.github/workflows/ci.yml` (ubuntu-24.04 + Go 1.26, verify/vet/test/race/FUSE-gate/docs), license/SBOM policy + Linux setup doc (`docs/development.md`).
+  - **Phase**: M1 / done (2026-11-08).
   - **Files**: go.mod, go.sum, Makefile, .gitignore, .github/workflows/*,
     docs/development.md.
   - **Tracker**: This repository.
-  - **Dependencies**: Modern Go toolchain; review selected dependency licenses.
+  - **Dependencies**: Go 1.26.0 toolchain; reviewed dependency licenses.
   - **Parallel**: No.
-  - **Verification**: go version, go mod verify, go test ./..., go vet ./....
+  - **Verification**: `go version` → go1.26.0; `go mod verify` → all modules verified; `go test ./...` / `go vet ./...` → no packages yet (honest; exit 0). Linux FUSE suite pending M3-01 (CI gate present).
 
 - [ ] **M1-02 — Define generated protocol schemas**: Create versioned Protobuf
   schemas for hello/auth, Raft envelopes, client requests, operation status,
