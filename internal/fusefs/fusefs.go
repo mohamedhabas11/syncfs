@@ -215,6 +215,9 @@ func (r *Root) attrs(n *NodeState, out *fuse.Attr) {
 
 // Getattr implements fs.NodeGetattr (root dir attrs).
 func (r *Root) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	if r.h == nil || r.h.root == nil {
+		return syscall.ENOENT // fail closed on uninitialized handler
+	}
 	if c, ok := extractCaller(ctx); ok {
 		if e := r.h.root.canAccess(c, true, false, true); e != 0 {
 			return e
@@ -226,7 +229,15 @@ func (r *Root) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut)
 
 // Lookup implements fs.NodeLookup: resolve name within root, else ENOENT.
 // Caller credentials are extracted and enforced (EPERM/EACCES on denial).
+//
+// NOTE: the Handler keeps a flat NodeState map; this Lookup populates the
+// kernel entry (attrs) but returns a nil inode. A full go-fuse inode tree
+// (NewPersistentInode per child, Readdir/Forget) is the documented residual
+// (known-limitations #15) — mount use is stat-root only until then.
 func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	if r.h == nil || r.h.root == nil {
+		return nil, syscall.ENOENT
+	}
 	caller, hasCaller := extractCaller(ctx)
 	if hasCaller {
 		// Need execute on the parent directory to resolve the name.
@@ -236,8 +247,6 @@ func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs
 	}
 	r.h.mu.RLock()
 	child, ok := r.h.root.children[name]
-	rootCopy := r.h.root
-	_ = rootCopy
 	r.h.mu.RUnlock()
 	if !ok {
 		return nil, ErrnoFor("ENOENT")
@@ -290,6 +299,10 @@ func (fh *fileHandle) Flush(ctx context.Context) syscall.Errno {
 // Open implements fs.NodeOpen for mutable files with direct-I/O (M3-01).
 // Direct-I/O is mandatory for mutable handles; cached I/O is refused.
 func (r *Root) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	if flags&oDirectFlag != 0 {
+		// Strict mode: O_DIRECT is excluded (EINVAL per posix matrix).
+		return nil, 0, syscall.EINVAL
+	}
 	caller, hasCaller := extractCaller(ctx)
 	if hasCaller {
 		needWrite := flags&0x3 == syscall.O_WRONLY || flags&0x3 == syscall.O_RDWR

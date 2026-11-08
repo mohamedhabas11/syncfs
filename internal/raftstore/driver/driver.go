@@ -1,17 +1,33 @@
 // Package driver wires raft to the metadata state machine (M2-04):
 // Ready loop with persistence-before-send, leader routing, ReadIndex,
-// committed-entry apply barrier, and chunk-gap campaign gating.
+// committed-entry apply barrier, and chunk-gap campaign gating (Inv.4).
+//
+// Chunk-gap contract (§8.4, Inv.4): a replica MUST NOT apply a committed
+// command referencing an absent hash-invalid chunk, and MUST NOT campaign
+// for leader while such an entry remains unapplied. Gating is active only
+// when the caller wires `chunkPresent` AND committed entries carry
+// manifests (default extractor decodes Command WriteRanges NewManifest +
+// PreparedChunk receipts; raw test entries carry no manifest → no gap).
+// Vote-grant is NOT gated (promoted-but-unapplied voters still vote, G-2).
 package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
+	"google.golang.org/protobuf/proto"
 
+	syncfsapi "github.com/mohamedhabas11/syncfs/api/v1/gen"
 	"github.com/mohamedhabas11/syncfs/internal/raftstore/wal"
 )
+
+// ErrChunkGap is returned when a committed entry references a chunk that is
+// not locally durable (caller must fetch+verify before apply/campaign).
+var ErrChunkGap = errors.New("driver: chunk gap")
 
 // Driver owns the etcd/raft.Node for one replica.
 type Driver struct {
@@ -20,7 +36,15 @@ type Driver struct {
 	config       raft.Config
 	chunkPresent func(hash [32]byte) bool
 
+	// chunkExtractor maps a committed entry to referenced chunk hashes.
+	// Nil means the default Command decoder (WriteRanges manifests).
+	chunkExtractor func(raftpb.Entry) [][32]byte
+
 	applyRequested chan<- raftpb.Entry
+	// pendingApply defers gap-blocked entries (and channel-full backpressure)
+	// without blocking Ready processing (Inv.4 + §8.4 rule 4).
+	applyMu  sync.Mutex
+	pending  []raftpb.Entry
 }
 
 // NewDriver builds a driver for the given id/voters.
@@ -30,6 +54,22 @@ func NewDriver(id uint64, voters []uint64, storage *wal.Storage, chunkPresent fu
 
 // NewDriverWithTicks allows jittered ticks (production etcd does the same).
 func NewDriverWithTicks(id uint64, voters []uint64, storage *wal.Storage, chunkPresent func(hash [32]byte) bool, electionTick, heartbeatTick int) (*Driver, error) {
+	if storage == nil {
+		return nil, errors.New("driver: storage is required")
+	}
+	if len(voters) == 0 {
+		return nil, errors.New("driver: voters are required (InitialPeers alone is not enough)")
+	}
+	found := false
+	for _, v := range voters {
+		if v == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("driver: id %d not in voters", id)
+	}
 	cfg := raft.Config{
 		ID:              id,
 		ElectionTick:    electionTick,
@@ -39,8 +79,10 @@ func NewDriverWithTicks(id uint64, voters []uint64, storage *wal.Storage, chunkP
 		MaxInflightMsgs: 100,
 		CheckQuorum:     true,
 		PreVote:         true,
+		// Bounded uncommitted entries (spec §8.4): fail closed on runaway
+		// proposal buffering instead of unbounded memory growth.
+		MaxUncommittedEntriesSize: 1 << 20, // 1 MiB
 	}
-	_ = voters // membership comes from Storage.InitialState (set by caller)
 	n := raft.RestartNode(&cfg)
 	return &Driver{
 		node:         n,
@@ -53,12 +95,19 @@ func NewDriverWithTicks(id uint64, voters []uint64, storage *wal.Storage, chunkP
 // SetApplyChannel registers where committed entries are delivered (M2-05).
 func (d *Driver) SetApplyChannel(ch chan<- raftpb.Entry) { d.applyRequested = ch }
 
+// SetChunkExtractor overrides the manifest decoder (tests / non-Command data).
+func (d *Driver) SetChunkExtractor(f func(raftpb.Entry) [][32]byte) { d.chunkExtractor = f }
+
 // Tick advances the logical clock.
 func (d *Driver) Tick() { d.node.Tick() }
 
 // Step processes one Ready cycle if any is pending: persist, then expose
 // messages for sending. Persistence happens before Ready.Messages are
 // returned (spec 8.4 rule 1). Non-blocking: (nil, nil) when nothing pending.
+//
+// Apply delivery never blocks Ready (spec 8.4 rule 4): committed entries
+// that reference missing chunks (or find a full channel) are deferred to
+// the pending queue; call RetryApply after fetching the chunks.
 func (d *Driver) Step(ctx context.Context) ([]raftpb.Message, error) {
 	select {
 	case <-ctx.Done():
@@ -71,10 +120,16 @@ func (d *Driver) Step(ctx context.Context) ([]raftpb.Message, error) {
 			return nil, fmt.Errorf("driver: save ready: %w", err)
 		}
 		d.node.Advance()
+		// Retry earlier deferred entries first (preserves in-order apply).
+		d.retryPendingLocked()
 		for _, e := range r.CommittedEntries {
-			if d.applyRequested != nil {
-				d.applyRequested <- e
+			if d.entryGap(e) != nil {
+				d.applyMu.Lock()
+				d.pending = append(d.pending, e)
+				d.applyMu.Unlock()
+				continue
 			}
+			d.deliver(e)
 		}
 		return r.Messages, nil
 	default:
@@ -82,7 +137,143 @@ func (d *Driver) Step(ctx context.Context) ([]raftpb.Message, error) {
 	}
 }
 
-// StepMsg delivers a raft message to this replica.
+// deliver sends e to the apply channel without blocking; overflow defers.
+func (d *Driver) deliver(e raftpb.Entry) {
+	if d.applyRequested == nil {
+		return
+	}
+	select {
+	case d.applyRequested <- e:
+	default:
+		d.applyMu.Lock()
+		d.pending = append(d.pending, e)
+		d.applyMu.Unlock()
+	}
+}
+
+// RetryApply delivers deferred entries whose chunks are now present.
+// Returns the number delivered. Call after fetching missing chunks.
+func (d *Driver) RetryApply() int {
+	d.retryPendingLocked()
+	d.applyMu.Lock()
+	defer d.applyMu.Unlock()
+	return len(d.pending)
+}
+
+// PendingApply reports deferred (not yet applied) committed entries.
+func (d *Driver) PendingApply() int {
+	d.applyMu.Lock()
+	defer d.applyMu.Unlock()
+	return len(d.pending)
+}
+
+func (d *Driver) retryPendingLocked() {
+	if d.applyRequested == nil {
+		return
+	}
+	// Drain in order; stop at the first still-gapped entry (preserves order).
+	d.applyMu.Lock()
+	var rest []raftpb.Entry
+	failedOrStamp := false
+	for _, e := range d.pending {
+		if failedOrStamp || d.entryGap(e) != nil {
+			rest = append(rest, e)
+			failedOrStamp = true
+			continue
+		}
+		select {
+		case d.applyRequested <- e:
+		default:
+			rest = append(rest, e)
+			failedOrStamp = true
+		}
+	}
+	d.pending = rest
+	d.applyMu.Unlock()
+}
+
+// entryGap returns a wrapped ErrChunkGap if e references a missing chunk.
+func (d *Driver) entryGap(e raftpb.Entry) error {
+	if d.chunkPresent == nil {
+		return nil
+	}
+	for _, h := range d.extract(e) {
+		if !d.chunkPresent(h) {
+			return fmt.Errorf("%w: entry %d references missing chunk %x", ErrChunkGap, e.Index, h[:8])
+		}
+	}
+	return nil
+}
+
+// extract returns referenced chunk hashes for e (default: Command manifests).
+func (d *Driver) extract(e raftpb.Entry) [][32]byte {
+	if d.chunkExtractor != nil {
+		return d.chunkExtractor(e)
+	}
+	var cmd syncfsapi.Command
+	if err := proto.Unmarshal(e.Data, &cmd); err != nil {
+		return nil // opaque/raw entry: no manifest → no gap
+	}
+	if cmd.Kind != syncfsapi.CommandKind_WRITE_RANGES {
+		return nil
+	}
+	var out [][32]byte
+	if m := cmd.GetWriteRanges().GetNewManifest(); len(m) == 32 {
+		var h [32]byte
+		copy(h[:], m)
+		out = append(out, h)
+	}
+	for _, r := range cmd.GetPreparedChunks() {
+		if id := r.GetChunkId(); len(id) == 32 {
+			var h [32]byte
+			copy(h[:], id)
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// ChunkGap reports whether any committed entry up to the committed index
+// references a missing chunk (Inv.4). Nil chunkPresent means no data → nil.
+func (d *Driver) ChunkGap() error {
+	if d.chunkPresent == nil {
+		return nil
+	}
+	hs, _, err := d.storage.InitialState()
+	if err != nil {
+		return err
+	}
+	commit := hs.Commit
+	if commit == 0 {
+		return nil
+	}
+	first, err := d.storage.FirstIndex()
+	if err != nil {
+		return err
+	}
+	lo := first
+	if lo > commit+1 {
+		return nil
+	}
+	ents, err := d.storage.Entries(lo, commit+1, 1<<30)
+	if err != nil {
+		if errors.Is(err, raft.ErrCompacted) {
+			// Compacted prefix is in the snapshot; snapshot activation already
+			// proved chunk presence at snapshot time. No additional gap.
+			return nil
+		}
+		return err
+	}
+	for _, e := range ents {
+		if err := d.entryGap(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// StepMsg delivers a raft message to this replica. Vote-grant is NOT gated
+// by chunk gaps (a promoted-but-unapplied voter must still vote, G-2).
 func (d *Driver) StepMsg(ctx context.Context, msg raftpb.Message) error {
 	return d.node.Step(ctx, msg)
 }
@@ -101,8 +292,7 @@ func (d *Driver) Campaign(ctx context.Context) error {
 }
 
 func (d *Driver) checkChunkGaps() error {
-	// Predicate-based; wired against committed manifests in M2-05.
-	return nil
+	return d.ChunkGap()
 }
 
 // ReadIndex requests a linearizable read marker.

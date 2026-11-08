@@ -12,7 +12,7 @@ Honest per-milestone state. Allowed: NOT_STARTED | PARTIAL | DONE | DEFERRED | B
 | M2-01 WAL/snapshot | DONE | `go test ./internal/raftstore/... -race` PASS (2645e09); restore/gap fixed #7 |
 | M2-02 chunkstore | DONE | `go test ./internal/chunkstore/... -race` PASS (7a261f7); corruption/dedup fixed #9 |
 | M2-03 metadata | DONE | `go test ./internal/metadata/... -race` PASS (1403df6); determinism/parents fixed #8 |
-| M2-04 raft driver | DONE | `go test ./internal/raftstore/... -race` PASS incl. 3-node mesh (c89af8c) |
+| M2-04 raft driver | DONE | `go test ./internal/raftstore/... -race` PASS incl. 3-node mesh (c89af8c); chunk-gap gating + deferred apply + voter validation (`TestApplyDeferredForMissingChunk`, `TestCampaignRefusedWithChunkGap`); caveats #14 |
 | M2-05 quorum writes | DONE | `go test ./internal/volume/... -race` PASS (9ae7f7b); sentinel/ctx/batch fixed #11 |
 | M2-06 leases/locks/cache | DONE | `go test ./... -race` PASS (c8fc0eb) + locks fix (ecb37e7): `TestFamilySeparationIsTotal`, `TestSameOwnerNeverSelfBlocks`, `TestBlockingGrantAcquiresAfterRelease`, `TestBindProtoCarriesInodeAndRange` |
 | M3-01 FUSE skeleton | DONE | `TestFUSEmountSmoke` PASS in container (eba1e4e; completion 1800055: `TestStrictTimeoutsZero`, `TestCallerCredentialsEnforcedInLookup`, `TestWriteFileFailsClosedOnSyncerError`, `TestOpenReleaseFsyncLifecycle`, `TestErrnoTable` PASS) |

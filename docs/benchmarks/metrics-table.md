@@ -58,9 +58,9 @@ Throughput flat vs clients on named volume (fsync-serialized); p50 latency grows
 | G2 WAL crash suite | **GREEN** (edge C1) |
 | G3 Chunk recovery | **GREEN** (chunkstore suite + edge) |
 | G4 Coordinator (sentinel/ctx/index/receipts/dangling) | **GREEN** (edge C3) |
-| G5 Driver gap gating | OPEN (checkChunkGaps stub — known limitation, see below) |
-| G6 Auth (atomic + VerifyConnection+role) | PARTIAL: atomic double-spend + empty GREEN (edge C5); per-stream role + VerifyConnection still open |
-| G7 FUSE (fail-closed/caps/Lookup/Open) | PARTIAL: WriteFile fail-closed + caps GREEN (edge C6); Lookup inode + Open-flags hardening remain |
+| G5 Driver gap gating | GREEN: `ChunkGap`/`RetryApply` deferred apply, non-blocking `Step`, voter validation (`TestApplyDeferredForMissingChunk`); auto-tick callers must consult `ChunkGap` (see `known-limitations.md` #14) |
+| G6 Auth (atomic + VerifyConnection+role) | PARTIAL: atomic double-spend + empty GREEN (edge C5), `VerifyConnection` wired + `AcceptClassifiedStream` role-enforced (`TestVerifyConnectionEnforcesCluster`, `TestPerStreamRoleEnforcement`); opener `OpenClassifiedStream` role check is caller duty (see `known-limitations.md` #10) |
+| G7 FUSE (fail-closed/caps/Lookup/Open) | PARTIAL: WriteFile fail-closed + caps GREEN (edge C6), nil-handler + O_DIRECT hardening (`TestNilHandlerFailsClosed`, `TestOpenRejectsODIRECT`); full inode tree (Lookup non-nil, Readdir/Forget) still pending (#15) |
 | G8 Locks end-to-end (ctx/EDEADLK/wake/wiring) | PARTIAL: family/BindProto/steal GREEN; BlockingGrant(ctx)/EDEADLK/wake/wiring remain |
 | G9 Leases/journal/op-IDs | PARTIAL: InvalidateAll leases GREEN (edge C8); Valid Generation + journal durability remain |
 | G10 Honesty+harness | PARTIAL: fresh-payload bench GREEN, edge.sh + TestEdge checked in; status demotions + full attacker adoption remain |

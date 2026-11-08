@@ -21,7 +21,6 @@ const ALPN = "syncfs/1"
 // (min version), mutual auth via cluster CA, session tickets disabled so
 // peer verification cannot be skipped on resumption, 0-RTT off.
 func ServerTLSConfig(certs []tls.Certificate, pool *x509.CertPool, clusterID string) (*tls.Config, error) {
-	identity := auth.VerifyPeerCertificateFunc(pool, clusterID)
 	return &tls.Config{
 		Certificates: certs,
 		NextProtos:   []string{ALPN},
@@ -29,9 +28,10 @@ func ServerTLSConfig(certs []tls.Certificate, pool *x509.CertPool, clusterID str
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    pool,
 		RootCAs:      pool,
-		// nolint
-		VerifyPeerCertificate: identity,
-		// Tickets disabled => VerifyPeerCertificate always runs (no resumption skip).
+		// VerifyConnection (not VerifyPeerCertificate, which is skipped on
+		// resumed connections) enforces chain + SAN + cluster on every
+		// connection, per spec §8.1.
+		VerifyConnection:       auth.VerifyConnectionFunc(pool, clusterID),
 		SessionTicketsDisabled: true,
 	}, nil
 }
@@ -39,7 +39,6 @@ func ServerTLSConfig(certs []tls.Certificate, pool *x509.CertPool, clusterID str
 // ClientTLSConfig is the same config for dialing (clients present certs,
 // servers require them; both sides verify identity).
 func ClientTLSConfig(certs []tls.Certificate, pool *x509.CertPool, clusterID string) (*tls.Config, error) {
-	identity := auth.VerifyPeerCertificateFunc(pool, clusterID)
 	return &tls.Config{
 		Certificates: certs,
 		NextProtos:   []string{ALPN},
@@ -47,8 +46,7 @@ func ClientTLSConfig(certs []tls.Certificate, pool *x509.CertPool, clusterID str
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    pool,
 		RootCAs:      pool,
-		// nolint
-		VerifyPeerCertificate:  identity,
+		VerifyConnection:       auth.VerifyConnectionFunc(pool, clusterID),
 		SessionTicketsDisabled: true,
 	}, nil
 }

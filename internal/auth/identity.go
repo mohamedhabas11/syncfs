@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -73,6 +74,7 @@ func NewServerTLSConfig(pool *x509.CertPool, clusterID string) (*tlsConfig, erro
 // VerifyPeerCertificateFunc validates certs and binds identity to clusterID.
 // It MUST be registered as VerifyConnection by the transport layer (never
 // VerifyPeerCertificate alone, which is skipped on resumed connections).
+// Prefer VerifyConnectionFunc below; this remains for back-compat.
 func VerifyPeerCertificateFunc(pool *x509.CertPool, clusterID string) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
@@ -85,6 +87,30 @@ func VerifyPeerCertificateFunc(pool *x509.CertPool, clusterID string) func(rawCe
 		if err != nil {
 			return fmt.Errorf("auth: parse certificate: %w", err)
 		}
+		opts := x509.VerifyOptions{Roots: pool, CurrentTime: time.Now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
+		if _, err := leaf.Verify(opts); err != nil {
+			return fmt.Errorf("auth: verify: %w", err)
+		}
+		id, err := IdentityOf(leaf)
+		if err != nil {
+			return err
+		}
+		if id.ClusterID != clusterID {
+			return fmt.Errorf("%w: SAN cluster %q != %q", ErrClusterMismatch, id.ClusterID, clusterID)
+		}
+		return nil
+	}
+}
+
+// VerifyConnectionFunc validates the connection state (chain + exactly-one
+// URI SAN + cluster binding) on EVERY connection, including resumed ones.
+// Transport MUST register this as tls.Config.VerifyConnection (spec §8.1).
+func VerifyConnectionFunc(pool *x509.CertPool, clusterID string) func(tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return errors.New("auth: no peer certificate")
+		}
+		leaf := cs.PeerCertificates[0]
 		opts := x509.VerifyOptions{Roots: pool, CurrentTime: time.Now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}}
 		if _, err := leaf.Verify(opts); err != nil {
 			return fmt.Errorf("auth: verify: %w", err)

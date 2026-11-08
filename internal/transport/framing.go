@@ -1,10 +1,13 @@
 package transport
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
+	"github.com/mohamedhabas11/syncfs/internal/auth"
 	"github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
 )
@@ -36,9 +39,65 @@ func (c StreamClass) Urgency() int8 {
 }
 
 // OpenClassifiedStream opens a stream and applies the class priority.
+// Callers MUST validate their own principal for the class via
+// ValidatePrincipalForClass before opening (opener role enforcement); the
+// peer's cluster identity is already enforced by VerifyConnection.
 func OpenClassifiedStream(conn *quic.Conn, class StreamClass) (*quic.Stream, error) {
 	st, err := conn.OpenStream()
 	if err != nil {
+		return nil, err
+	}
+	st.SetPriority(class.Urgency(), false)
+	return st, nil
+}
+
+// AllowedPrincipalForClass reports which principal types may open a class
+// (spec §8.1): raft/chunk/snapshot are node-only; control is node|admin;
+// client is client|admin. A client cert presenting on a raft port is denied.
+func AllowedPrincipalForClass(class StreamClass, principalType string) bool {
+	switch class {
+	case ClassRaft, ClassChunk, ClassSnapshot:
+		return principalType == "node"
+	case ClassControl:
+		return principalType == "node" || principalType == "admin"
+	case ClassClient:
+		return principalType == "client" || principalType == "admin"
+	}
+	return false
+}
+
+// ValidatePrincipalForClass returns ErrRoleDenied when the identity may not
+// use the stream class.
+func ValidatePrincipalForClass(id auth.Identity, class StreamClass) error {
+	if !AllowedPrincipalForClass(class, id.PrincipalType) {
+		return fmt.Errorf("transport: %s principal %q may not open class %d", id.PrincipalType, id.ID, class)
+	}
+	return nil
+}
+
+// PeerIdentity extracts the peer's Identity from a live QUIC connection.
+func PeerIdentity(conn *quic.Conn) (auth.Identity, error) {
+	cs := conn.ConnectionState().TLS
+	if len(cs.PeerCertificates) == 0 {
+		return auth.Identity{}, errors.New("transport: no peer certificate")
+	}
+	return auth.IdentityOf(cs.PeerCertificates[0])
+}
+
+// AcceptClassifiedStream accepts a stream and enforces the opener's role
+// for the class (for example, a client cert opening a raft stream fails).
+func AcceptClassifiedStream(ctx context.Context, conn *quic.Conn, class StreamClass) (*quic.Stream, error) {
+	st, err := conn.AcceptStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	peer, err := PeerIdentity(conn)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	if err := ValidatePrincipalForClass(peer, class); err != nil {
+		_ = st.Close()
 		return nil, err
 	}
 	st.SetPriority(class.Urgency(), false)
