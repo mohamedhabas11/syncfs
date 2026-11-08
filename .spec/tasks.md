@@ -71,16 +71,13 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test ./internal/auth/... -race` green in the container fleet (CA issue/verify, SAN profile, enrollment single-use, redaction, roles).
 
-- [ ] **M1-04 — Implement QUIC session and stream framing**: Establish mTLS
-  QUIC with syncfs/1, peer role validation, bounded Protobuf framing, stream
-  priorities, deadlines, and 0-RTT rejection.
-  - **Phase**: M1 / blocked by M1-02 and M1-03.
+- [x] **M1-04 — Implement QUIC session and stream framing**: mTLS QUIC with syncfs/1, peer role validation, bounded Protobuf framing, stream priorities, deadlines, and 0-RTT rejection.
+  - **Phase**: M1 / done (2026-11-08).
   - **Files**: internal/transport/*, internal/transport/*_test.go.
   - **Tracker**: This repository.
-  - **Dependencies**: M1-02, M1-03.
-  - **Parallel**: Yes, Protocol lane.
-  - **Verification**: go test -race ./internal/transport/... and a TLS
-    negative-test matrix.
+  - **Dependencies**: M1-02, M1-03 (done).
+  - **Parallel**: No.
+  - **Verification**: `go test ./internal/transport/... -race` green in the container fleet (hello round-trip, foreign cluster rejection, oversize frame, class priorities, no 0-RTT).
 
 - [ ] **M2-01 — Implement crash-safe Raft WAL and snapshot store**: Persist
   entries, hard state, and snapshots in the required order; expose a

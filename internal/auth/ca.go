@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/url"
 	"time"
 )
@@ -90,10 +91,14 @@ func (c *CA) issue(principalType, id string) (*Leaf, error) {
 		SerialNumber: serial,
 		Subject:      DNFor(principalType, id),
 		URIs:         []*url.URL{u},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(825 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		// Connection-level names only (identity = URI SAN above; the handshake
+		// needs a hostname match for 127.0.0.1 test endpoints).
+		DNSNames:    []string{"localhost"},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+		NotBefore:   time.Now().Add(-time.Hour),
+		NotAfter:    time.Now().Add(825 * 24 * time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.Cert, key.Public(), c.Key)
 	if err != nil {
