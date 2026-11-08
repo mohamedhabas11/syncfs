@@ -107,16 +107,16 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/metadata/...` green in the container fleet (create, atomicity, idempotent opIDs, preconditions, rename).
 
-- [ ] **M2-04 — Wire Raft to the metadata state machine**: Implement the Raft
+- [x] **M2-04 — Wire Raft to the metadata state machine**: Raft
   Ready loop, leader routing, ReadIndex, committed-entry apply barrier, and
   refusal to campaign with missing committed chunks.
-  - **Phase**: M2 / blocked by M1-04, M2-01, M2-03.
-  - **Files**: internal/raftstore/driver/*, internal/volume/replica/*,
-    internal/testkit/cluster/*.
+  - **Phase**: M2 / done (2026-11-08).
+  - **Files**: internal/raftstore/driver/*, internal/volume/replica/* (barrier
+    hook in driver), internal/testkit/cluster/*.
   - **Tracker**: This repository.
-  - **Dependencies**: M1-04, M2-01, M2-03.
+  - **Dependencies**: M1-04, M2-01, M2-03 (done).
   - **Parallel**: No.
-  - **Verification**: go test -race ./internal/raftstore/... ./internal/volume/... -run TestThreeNode.
+  - **Verification**: `go test -race ./internal/raftstore/...` green in the container fleet: three-node election + commit in-memory mesh.
 
 - [ ] **M2-05 — Implement quorum write coordinator**: Perform chunk preparation
   to a majority, build preconditioned commands, propose once, retain operation

@@ -59,10 +59,13 @@ type HookContext struct {
 	AppendSeq uint64
 }
 
+// Options for Open.
 type Options struct {
 	Hooks *Hooks
 	// Dir is the WAL directory (created if missing).
 	Dir string
+	// InitialPeers bootstraps the ConfState on a fresh WAL (first node).
+	InitialPeers []uint64
 }
 
 // Storage implements raft.Storage (read side) with durable write side.
@@ -77,6 +80,8 @@ type Storage struct {
 	// ents[i] has index i + snapshot.Metadata.Index + 1
 	ents []raftpb.Entry
 
+	initialPeers []uint64
+
 	seq          uint64
 	closed       bool
 	truncatedErr error
@@ -88,7 +93,7 @@ func Open(opts Options) (*Storage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("wal: open: %w", err)
 	}
-	s := &Storage{dir: opts.Dir, file: f, hooks: opts.Hooks}
+	s := &Storage{dir: opts.Dir, file: f, hooks: opts.Hooks, initialPeers: opts.InitialPeers}
 	if err := s.replay(); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -266,7 +271,13 @@ func maxUint64(a, b uint64) uint64 {
 func (s *Storage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.hardState, s.snapshot.Metadata.ConfState, nil
+	cc := s.snapshot.Metadata.ConfState
+	if len(cc.Voters) == 0 && len(s.initialPeers) > 0 {
+		// bootstrap: fresh WAL gets the initial membership preloaded
+		cc.Voters = append([]uint64{}, s.initialPeers...)
+		return s.hardState, cc, nil
+	}
+	return s.hardState, cc, nil
 }
 
 func (s *Storage) Entries(lo, hi, maxSize uint64) ([]raftpb.Entry, error) {
