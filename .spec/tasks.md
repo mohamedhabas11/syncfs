@@ -221,8 +221,8 @@ edit shared schemas or generated code concurrently.
 - [ ] **M5-01 — Qualify durability, HA, and performance**: Run all required
   fault cases, record the reference hardware benchmark, validate SBOM/security,
   and publish a repeatable release qualification report.
-  - **Phase**: M5 / blocked by M4-03 and M4-04.
-  - **Files**: test/benchmark/*, docs/qualification/*, CI release workflow.
+  - **Phase**: M5 / DEFERRED per ADR-0001 (needs reference hardware).
+  - **Files**: test/benchmark/*, docs/benchmarks/*, docs/qualification/*, CI release workflow.
   - **Tracker**: This repository.
   - **Dependencies**: M4-03, M4-04, reference hardware.
   - **Parallel**: No.
@@ -233,7 +233,7 @@ edit shared schemas or generated code concurrently.
   HA/shared-home suite on two application hosts over the mount, including
   failover and replacement scenarios; update the public compatibility statement
   only with passing evidence.
-  - **Phase**: M5 / blocked by M5-01 and a chosen target application.
+  - **Phase**: M5 / DEFERRED per ADR-0001 (needs M5-01 + chosen target app).
   - **Files**: test/qualification/<application>/*, docs/compatibility.md.
   - **Tracker**: This repository.
   - **Dependencies**: M5-01; human decision on target service/version.

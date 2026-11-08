@@ -42,6 +42,16 @@ Delivered: mount skeleton (go-fuse v2), strict posture, kernel-mount smoke
 test in the fleet, Lookup/Open/Getattr + errno table + handler surface.
 In-memory state; coordinator persistence wiring follows with M5.
 
+| 2026-11-08 | M2-06 locks fix | ecb37e7 | go test ./internal/metadata/locks/... -race (fleet: TestFamilySeparationIsTotal, TestSameOwnerNeverSelfBlocks, TestBlockingGrantAcquiresAfterRelease, TestBindProtoCarriesInodeAndRange) | PASS |
+| 2026-11-08 | M3-01/M3-02 FUSE completion | 1800055 | go test ./internal/fusefs/... -race (TestStrictTimeoutsZero, TestCallerCredentialsEnforcedInLookup, TestWriteFileFailsClosedOnSyncerError, TestOpenReleaseFsyncLifecycle, TestFUSEmountSmoke kernel-mount) | PASS |
+| 2026-11-08 | M3-03 durable journal | 31ecfb2 | go test ./internal/client/... -race (TestJournalPersistsAcrossRestart, TestReconnectFoldsServerState, TestDropInvalidateSuspended) | PASS |
+| 2026-11-08 | M4-02/M4-03 joint+CLI | a915888 | go test ./internal/admin/member/... + ./cmd/... -race (TestJointPromotionFlow, TestAdminCLIParsing) | PASS |
+| 2026-11-08 | Docs honesty + ADRs + reference | f6017a4 | mkdocs build --strict (passed); docs/spec/status vs .spec/tasks matched | PASS |
+| 2026-11-08 | M2-01/M2-03 audit fixes | 882c343 | go vet + go test ./... (WAL restore, deterministic IDs) | PASS |
+| 2026-11-08 | M2-02/M2-05/M1-03/M1-04/M3-02 audit fixes | 2b4b06f | go test ./... (chunkstore quarantine, volume batch/ctx, enrollment, framing) | PASS |
+| 2026-11-08 | M5-01 edge bench (deferred qual) | 4899533 | TestEdgeCases C1-C8 PASS; fresh-payload benches (docker ~823 ops/s p50 1.17ms; darwin ~42 ops/s — results.json) | PASS (in-process only) |
+| 2026-11-08 | Final verification (clean tree) | cc8b57e | go build ./..., go vet ./..., go test ./... -race (23 pkgs), mkdocs build --strict, goreleaser check (no local binary; CI release workflow on tag) | PASS |
+
 ## Final (autonomous mode)
 
 M2-02..M2-06 are complete: raft WAL/snapshot store, BLAKE3 chunkstore, metadata
