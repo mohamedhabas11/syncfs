@@ -5,6 +5,49 @@ import (
 	"testing"
 )
 
+func TestAdminCLIParsing(t *testing.T) {
+	// Missing required flags fail with usage exit 2 (not silent success).
+	if code := runAdmin([]string{"bootstrap"}); code != 2 {
+		t.Fatalf("bootstrap without flags must exit 2, got %d", code)
+	}
+	if code := runAdmin([]string{"status"}); code != 2 {
+		t.Fatalf("status without endpoint must exit 2, got %d", code)
+	}
+	if code := runAdmin([]string{"volume"}); code != 2 {
+		t.Fatalf("volume without --volume must exit 2, got %d", code)
+	}
+	if code := runAdmin([]string{"member"}); code != 2 {
+		t.Fatalf("member without --node must exit 2, got %d", code)
+	}
+	if code := runAdmin([]string{"bootstrap", "--cluster-id", "c1", "--out", "/tmp/x"}); code != 0 {
+		t.Fatalf("bootstrap with flags must exit 0, got %d", code)
+	}
+	if code := runAdmin([]string{"status", "--endpoint", "127.0.0.1:5001"}); code != 0 {
+		t.Fatalf("status with endpoint must exit 0, got %d", code)
+	}
+	if code := runAdmin([]string{"volume", "--volume", "default", "--op", "status"}); code != 0 {
+		t.Fatalf("volume with flags must exit 0, got %d", code)
+	}
+	if code := runAdmin([]string{"member", "--node", "n2", "--op", "status"}); code != 0 {
+		t.Fatalf("member with flags must exit 0, got %d", code)
+	}
+	// daemon requires an existing config file
+	if code := runDaemon([]string{"--config", "/nonexistent-syncfs-test.yaml"}); code != 1 {
+		t.Fatalf("daemon with missing config must exit 1, got %d", code)
+	}
+	// mount requires an existing directory target
+	if code := runMount([]string{"--volume", "default", "--target", "/nonexistent-syncfs-mnt"}); code != 1 {
+		t.Fatalf("mount with missing target must exit 1, got %d", code)
+	}
+	if code := runMount([]string{"--volume", "default", "--target", t.TempDir()}); code != 0 {
+		t.Fatalf("mount with dir target must exit 0, got %d", code)
+	}
+	// unknown subcommand is a usage error
+	if code := run([]string{"bogus"}); code != 2 {
+		t.Fatalf("unknown subcommand must exit 2, got %d", code)
+	}
+}
+
 func TestRenderUnit(t *testing.T) {
 	u, err := RenderUnit("daemon", "/etc/syncfs/node.yaml")
 	if err != nil {

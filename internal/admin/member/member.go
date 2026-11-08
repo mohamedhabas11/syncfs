@@ -17,7 +17,9 @@ type Phase int
 const (
 	PhaseLearner Phase = iota
 	PhaseCatchup
+	PhaseJoint // joint consensus entered, awaiting implicit leave
 	PhasePromoted
+	PhaseDraining // drain requested, removal follows
 	PhaseRemoved
 )
 
@@ -98,6 +100,68 @@ func (c *Cluster) RequestPromotion(id uint64) (raftpb.ConfChange, error) {
 	m.Promoted = true
 	c.pending = false
 	return raftpb.ConfChange{Type: raftpb.ConfChangeAddNode, NodeID: id}, nil
+}
+
+// RequestJointPromotion enters joint consensus: a ConfChangeV2 with
+// JointImplicit transition adding the learner as voter. The cluster takes
+// effect for both old and new majorities until the implicit leave lands.
+// This is the safe replacement path for an exactly-3 voter MVP.
+func (c *Cluster) RequestJointPromotion(id uint64) (raftpb.ConfChangeV2, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m, ok := c.members[id]
+	if !ok {
+		return raftpb.ConfChangeV2{}, fmt.Errorf("member: unknown %d", id)
+	}
+	if m.Phase != PhaseCatchup {
+		return raftpb.ConfChangeV2{}, fmt.Errorf("member: %d not caught up (refusal logged)", id)
+	}
+	m.Phase = PhaseJoint
+	// Voter state is visible once the joint entry is proposed.
+	// Explicit leave clears pending after the empty ConfChangeV2 lands.
+	return raftpb.ConfChangeV2{
+		Transition: raftpb.ConfChangeTransitionJointImplicit,
+		Changes: []raftpb.ConfChangeSingle{
+			{Type: raftpb.ConfChangeAddNode, NodeID: id},
+		},
+	}, nil
+}
+
+// LeaveJoint proposes the empty ConfChangeV2 that moves the cluster out of
+// the joint configuration. Only valid while in PhaseJoint.
+func (c *Cluster) LeaveJoint(id uint64) (raftpb.ConfChangeV2, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m, ok := c.members[id]
+	if !ok {
+		return raftpb.ConfChangeV2{}, fmt.Errorf("member: unknown %d", id)
+	}
+	if m.Phase != PhaseJoint {
+		return raftpb.ConfChangeV2{}, fmt.Errorf("member: %d not in joint configuration", id)
+	}
+	m.Phase = PhasePromoted
+	m.Promoted = true
+	c.pending = false
+	return raftpb.ConfChangeV2{
+		Transition: raftpb.ConfChangeTransitionJointImplicit,
+		Changes:    []raftpb.ConfChangeSingle{},
+	}, nil
+}
+
+// BeginDrain marks a promoted voter draining. A draining voter still counts
+// for the quorum but should stop accepting new proposals before removal.
+func (c *Cluster) BeginDrain(id uint64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m, ok := c.members[id]
+	if !ok || !m.Promoted {
+		return fmt.Errorf("member: %d is not a promoted voter", id)
+	}
+	if m.Phase == PhaseRemoved {
+		return fmt.Errorf("member: %d already removed", id)
+	}
+	m.Phase = PhaseDraining
+	return nil
 }
 
 // BeginRemove starts a safe drain+remove of an old voter (needs 2 survivors).
