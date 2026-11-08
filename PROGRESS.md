@@ -14,17 +14,26 @@ Autonomous build log. One line per milestone: id, commit, commands, result.
 | 2026-11-08 | M2-04 raft driver + 3-node mesh | c89af8c | go test ./internal/raftstore/... -race (fleet) | PASS |
 | 2026-11-08 | M2-05 quorum write coordinator | 9ae7f7b | go test ./internal/volume/... -race (fleet) | PASS |
 | 2026-11-08 | M2-06 leases + locks + cache | c8fc0eb | go test ./... -count=1 -race (fleet), go build/vet ./... (host go1.26.0) | PASS |
-| 2026-11-08 | Docs + fleet + M3-01 skeleton | TBD | mermaid diagrams; TestFUSEmountSmoke green in container | PASS |
+| 2026-11-08 | M3-01 FUSE skeleton (partial) | e133cab | mermaid diagrams; TestFUSEmountSmoke green in container | PARTIAL |
 
-## Mermaid fleet & progress
+## Spec-sheet progress tracking
 
+| Spec sheet | Status | Next |
+| --- | --- | --- |
+| diagrams/docs | architecture.md write-path + read/lease flows; operating-model bootstrap joining (mermaid) | compat matrix mermaid pending M3-02 |
+| PROGRESS.md | whole-build + this file | one line per milestone continues |
+| spec reconciliation | D-001/Camp A adopted; Camp B archived | — |
+| .spec/tasks.md | M3-01 honest OPEN (skeleton only) | full skeleton then M3-02 |
 
-| Area | Status |
-|| --- | --- |
-| diagrams/docs | architecture.md write-path + read/lease flows; operating-model bootstrap joining (mermaid) |
-| specs PROGRESS.md | 11 lines on file (M1-01..M2-06) |
-| spec reconciliation | D-001/Camp A adopted; Camp B archived |
-| 2026-11-08 | M2-06 leases + locks + cache | c8fc0eb | go test ./... -count=1 -race (fleet), go build/vet ./... (host go1.26.0) | PASS |
+## M3-01 honest status (2026-11-08)
+
+Delivered: mount skeleton (go-fuse v2, strict `AllowOther=false`, FsName syncfs),
+real kernel-mount smoke test in the fleet (`TestFUSEmountSmoke` PASS),
+Dockerfile (golang:1.26-alpine + fusermount + gcc) + per-node /dev/fuse wiring.
+NOT yet delivered: caller-credential extraction in Lookups, direct-I/O
+mutable-handle policy, exact Linux errno mapping table, full FUSE lifecycle
+(unmount flushing), oplogging of xattr/ACL namespaces. M3-01 checkbox remains
+OPEN; the skeleton is a partial step. M3-02 (compatibility profile) is next.
 
 ## Final (autonomous mode)
 
@@ -37,4 +46,3 @@ bugs found+fixed by tests this session: (1) lock-range disjoint logic was
 inverted; (2) 3-node election deadlocked on lockstep ticking with PreVote
 (each node self-voted first) — fixed by single-node ticking per round in the
 mesh harness (per etcd follower-election design).
-
