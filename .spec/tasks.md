@@ -87,16 +87,15 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/raftstore/...` green in the container fleet (reopen/replay, torn-write truncation, crash-hook order, gap detection, snapshot checksum).
 
-- [ ] **M2-02 — Implement immutable pack-based chunk storage**: Add chunk
+- [x] **M2-02 — Implement immutable pack-based chunk storage**: chunk
   staging, BLAKE3 validation, append-only pack records, Pebble index batches,
   durable receipts, idempotent reads, and crash-safe pack recovery.
-  - **Phase**: M2 / blocked by M1-01.
+  - **Phase**: M2 / done (2026-11-08).
   - **Files**: internal/chunkstore/*, internal/chunkstore/*_test.go.
   - **Tracker**: This repository.
-  - **Dependencies**: M1-01; format review against technical spec section 7.
-  - **Parallel**: Yes, Storage lane.
-  - **Verification**: go test -race ./internal/chunkstore/... and injected
-    torn-write/open tests.
+  - **Dependencies**: M1-01 (done); format review against technical spec section 7.
+  - **Parallel**: No.
+  - **Verification**: `go test -race ./internal/chunkstore/...` green in the container fleet (round-trip, dedup, corruption detection, reopen, torn-tail, size caps).
 
 - [ ] **M2-03 — Implement deterministic metadata state machine**: Add inode,
   dentry, manifest, permission, link-count, precondition, and operation-result
