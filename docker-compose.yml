@@ -1,0 +1,31 @@
+# SyncFS 3-node dev fleet (control + data plane testing ground).
+# Each service is a storage-node sandbox; the repo is mounted at /src.
+# Codegen (buf) runs on the host; containers are for build/test/daemon work.
+#
+# Start it:
+#   docker compose up -d            # build/test fleet runs the suite
+#   docker compose exec node-a go test ./... -race
+# FUSE-backed tests (M3+) run here too; they need --privileged — add it
+# when the FUSE milestone lands (not needed for M1/M2 unit work).
+
+services:
+  node-a:
+    image: golang:1.26
+    working_dir: /src
+    volumes:
+      - .:/src
+    command: go test ./... -count=1 -race
+
+  node-b:
+    image: golang:1.26
+    working_dir: /src
+    volumes:
+      - .:/src
+    command: go test ./... -count=1 -race
+
+  node-c:
+    image: golang:1.26
+    working_dir: /src
+    volumes:
+      - .:/src
+    command: go test ./... -count=1 -race

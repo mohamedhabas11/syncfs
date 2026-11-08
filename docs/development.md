@@ -35,9 +35,26 @@ for spec/docs work only — FUSE tests cannot run on macOS (see
 make mod-verify   # go mod verify
 make test         # go test ./...
 make vet          # go vet ./...
-make lint         # vet + gofmt
+make lint         # vet + gofmt + buf lint
 make build        # go build ./...
+make fleet-test   # container fleet: docker compose run --rm node-a go test ./... -race
 ```
+
+## Development containers (3-node fleet)
+
+The control/data-plane test fleet is `docker-compose.yml` — three `golang:1.26`
+services (`node-a`, `node-b`, `node-c`), each mounting the repo at `/src`.
+This is the primary dev loop; `make test` on the host is secondary.
+
+```text
+docker compose run --rm node-a go test ./... -count=1 -race   # one node
+make fleet-test                                              # same via Makefile
+docker compose up -d && docker compose exec node-b go version  # fleet up
+```
+
+Later milestones (control-plane enrollment, data-plane chunk transfer,
+FUSE mount) run the daemon inside these same three containers — add
+`--privileged` for FUSE when M3 lands. See `.spec/tasks.md` M1-03.
 
 ## CI
 

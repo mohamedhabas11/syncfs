@@ -55,17 +55,13 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go version` → go1.26.0; `go mod verify` → all modules verified; `go test ./...` / `go vet ./...` → no packages yet (honest; exit 0). Linux FUSE suite pending M3-01 (CI gate present).
 
-- [ ] **M1-02 — Define generated protocol schemas**: Create versioned Protobuf
-  schemas for hello/auth, Raft envelopes, client requests, operation status,
-  chunk receipts, leases, snapshots, and membership. Enforce message limits and
-  compatibility tests.
-  - **Phase**: M1 / ready after M1-01.
-  - **Files**: api/v1/*.proto, buf.yaml or equivalent, generated Go files,
-    api/v1/*_test.go.
+- [x] **M1-02 — Define generated protocol schemas**: versioned Protobuf schemas for hello/auth, Raft envelopes, client requests, operation status, chunk receipts, leases, snapshots, and membership, with message limits and compatibility tests.
+  - **Phase**: M1 / done (2026-11-08).
+  - **Files**: api/v1/*.proto, buf.yaml, buf.gen.yaml, api/v1/contract/*_test.go, api/baseline/*.
   - **Tracker**: This repository.
-  - **Dependencies**: M1-01 and the syncfs/1 contract in technical spec section 8.
+  - **Dependencies**: M1-01 (done).
   - **Parallel**: Yes, Protocol lane.
-  - **Verification**: buf lint, buf breaking against a checked-in baseline, go test ./api/....
+  - **Verification**: `buf lint` clean, `buf breaking --against api/baseline` clean, `go test ./api/...` green (incl. `-race` in the container fleet) with Go 1.26.
 
 - [ ] **M1-03 — Build identity, roles, and enrollment primitives**: Implement
   cluster/node/client certificate validation, cluster-ID binding, role checks,

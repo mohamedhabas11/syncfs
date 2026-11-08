@@ -1,16 +1,29 @@
 GO ?= go
 GOFLAGS ?=
+BUF_BASIS := api/baseline
 
-.PHONY: test vet lint build clean mod-verify help
+.PHONY: proto-lint proto-breaking proto-gen test vet lint build clean mod-verify fleet-test help
 
 help:
-	@echo "targets: test vet lint build clean mod-verify"
+	@echo "targets: proto-lint proto-breaking proto-gen test vet lint build clean mod-verify fleet-test"
 
 mod-verify:
 	$(GO) mod verify
 
+proto-lint:
+	buf lint
+
+proto-breaking:
+	buf breaking --against $(BUF_BASIS)
+
+proto-gen:
+	buf generate
+
 test:
 	$(GO) test ./...
+
+fleet-test:
+	docker compose run --rm node-a go test ./... -count=1 -race
 
 vet:
 	$(GO) vet ./...
@@ -21,6 +34,7 @@ lint:
 	$(GO) vet ./...
 	$(GO) fmt ./... > /dev/null
 	gofmt -l -s .
+	buf lint
 
 build:
 	$(GO) build ./...
