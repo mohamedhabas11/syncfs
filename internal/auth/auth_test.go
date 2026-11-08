@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/x509"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,10 +102,12 @@ func TestEnrollmentExpiryAndMismatch(t *testing.T) {
 func TestRedact(t *testing.T) {
 	r := NewRedactor()
 	secret := `{"nonce": "deadbeef1234", "note": "ok"}`
-	if got := r.Redact(secret); got == `[REDACTED]` || got == secret {
+	got := r.Redact(secret)
+	if strings.Contains(got, "deadbeef1234") {
 		t.Fatalf("nonce leaked: %q", got)
-	} else if want := "[REDACTED]"; got != `{"nonce": "[REDACTED]", "note": "ok"}` {
-		_ = want
+	}
+	if !strings.Contains(got, `"note": "ok"`) {
+		t.Fatalf("non-secret field must survive: %q", got)
 	}
 	pemSecret := "-----BEGIN EC PRIVATE KEY-----\nabc\n-----END EC PRIVATE KEY-----"
 	if got := r.Redact(pemSecret); got != "[REDACTED]" {

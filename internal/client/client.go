@@ -72,16 +72,44 @@ func NewJournalWithDir(dir string) (*Journal, error) {
 	if len(data) == 0 {
 		return j, nil
 	}
-	var raw map[string]string
-	if err := json.Unmarshal(data, &raw); err != nil {
+	// Legacy format: {id: "committed"}; new: {id: {"state": "...", "at_unix_ns": N}}.
+	var rawOld map[string]string
+	if json.Unmarshal(data, &rawOld) == nil {
+		ok := true
+		for _, v := range rawOld {
+			if v != string(OpCommitted) && v != string(OpRejected) && v != string(OpUnknown) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			for key, state := range rawOld {
+				id, err := decodeOpID(key)
+				if err != nil {
+					return nil, err
+				}
+				j.ops[id] = entry{state: OpState(state), at: time.Now()}
+			}
+			return j, nil
+		}
+	}
+	var rawNew map[string]struct {
+		State string `json:"state"`
+		At    int64  `json:"at_unix_ns"`
+	}
+	if err := json.Unmarshal(data, &rawNew); err != nil {
 		return nil, fmt.Errorf("client: journal corrupt: %w", err)
 	}
-	for key, state := range raw {
+	for key, v := range rawNew {
 		id, err := decodeOpID(key)
 		if err != nil {
 			return nil, err
 		}
-		j.ops[id] = entry{state: OpState(state), at: time.Now()}
+		at := time.Unix(0, v.At)
+		if v.At == 0 {
+			at = time.Now()
+		}
+		j.ops[id] = entry{state: OpState(v.State), at: at}
 	}
 	return j, nil
 }
@@ -128,9 +156,15 @@ func decodeOpID(key string) ([16]byte, error) {
 }
 
 func (j *Journal) persistLocked() error {
-	raw := map[string]string{}
+	raw := map[string]struct {
+		State string `json:"state"`
+		At    int64  `json:"at_unix_ns"`
+	}{}
 	for id, e := range j.ops {
-		raw[hex.EncodeToString(id[:])] = string(e.state)
+		raw[hex.EncodeToString(id[:])] = struct {
+			State string `json:"state"`
+			At    int64  `json:"at_unix_ns"`
+		}{State: string(e.state), At: e.at.UnixNano()}
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {
@@ -260,6 +294,9 @@ func (s *Session) Reconnect(lookup func(opID [16]byte) (OpState, bool)) (int, er
 		if found && state != OpUnknown {
 			s.journal.mu.Lock()
 			s.journal.ops[id] = entry{state: state, at: time.Now()}
+			s.journal.pruneLocked()
+			// Fold durably: persist so folding survives a crash.
+			_ = s.journal.persistLocked()
 			s.journal.mu.Unlock()
 		}
 	}

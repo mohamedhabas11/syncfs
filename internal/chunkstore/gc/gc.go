@@ -91,6 +91,21 @@ func (c *Collector) Sweep(reach Reachability, oldestRetained uint64) []chunkstor
 	return cand
 }
 
+// SweepAndDelete sweeps unreachable ids and deletes them from the store
+// (index entry removal; pack bytes become unreachable and are reclaimed by
+// later pack compaction). Callers must persist the generation before this.
+func (c *Collector) SweepAndDelete(s *chunkstore.Store, reach Reachability, oldestRetained uint64) ([]chunkstore.ChunkID, error) {
+	cand := c.Sweep(reach, oldestRetained)
+	var deleted []chunkstore.ChunkID
+	for _, id := range cand {
+		if err := s.Delete(id); err != nil {
+			return deleted, err
+		}
+		deleted = append(deleted, id)
+	}
+	return deleted, nil
+}
+
 // Generation reports the current epoch.
 func (c *Collector) Generation() uint64 {
 	c.mu.Lock()

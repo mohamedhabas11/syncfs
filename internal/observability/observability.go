@@ -31,6 +31,7 @@ type Stats struct {
 	GCBacklog              uint64
 	FreeDiskBytes          uint64
 	CertificateExpiryHours float64
+	CheckpointIndex        uint64
 }
 
 // Collector is a tiny in-memory collector (sufficient for tests + the scrape
@@ -54,14 +55,19 @@ const (
 	MetricLearnerCatchupProgress = "syncfs_learner_catchup_progress"
 	MetricLeaseRevokeWait        = "syncfs_lease_revoke_wait_ms"
 	MetricLockWait               = "syncfs_lock_wait_ms"
-	MetricAmbiguousOps           = "syncfs_ambiguous_operations_total"
 	MetricCheckpoint             = "syncfs_checkpoint"
 	MetricRepairBacklog          = "syncfs_repair_backlog"
 	MetricGCBacklog              = "syncfs_gc_backlog"
 	MetricFreeBytes              = "syncfs_free_bytes"
 	MetricCertificateExpiryHours = "syncfs_certificate_expiry_hours"
 	MetricAmbiguousOpsTotal      = "syncfs_ambiguous_operations_total"
+	MetricFollowerLag            = "syncfs_follower_lag"
+	MetricChunkChecksumFailures  = "syncfs_chunk_checksum_failures_total"
 )
+
+// MetricAmbiguousOps is the former alias of MetricAmbiguousOpsTotal (kept
+// for source compatibility; both denote one series).
+var MetricAmbiguousOps = MetricAmbiguousOpsTotal
 
 // NewCollector builds a collector.
 func NewCollector() *Collector {
@@ -70,11 +76,24 @@ func NewCollector() *Collector {
 	}
 }
 
-// Observe records a sample (HELP text pinned by catalogue order).
+// Observe records a sample.
 func (c *Collector) Observe(name string, v float64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.samples[name] = v
+}
+
+// metricHelp returns HELP text and exposition TYPE for a series. Counters
+// follow Prometheus convention (`_total` → counter); everything else is a gauge.
+func metricHelp(name string) (help string, typ string) {
+	if hasSuffix(name, "_total") {
+		return "operations", "counter"
+	}
+	return "value", "gauge"
+}
+
+func hasSuffix(s, suf string) bool {
+	return len(s) >= len(suf) && s[len(s)-len(suf):] == suf
 }
 
 // Prometheus renders the exposition text.
@@ -88,7 +107,8 @@ func (c *Collector) Prometheus() string {
 	sort.Strings(names)
 	var out []byte
 	for _, n := range names {
-		out = append(out, []byte(fmt.Sprintf("# TYPE %s gauge\n%s %v\n", n, n, c.samples[n]))...)
+		help, typ := metricHelp(n)
+		out = append(out, []byte(fmt.Sprintf("# HELP %s %s\n# TYPE %s %s\n%s %v\n", n, help, n, typ, n, c.samples[n]))...)
 	}
 	return string(out)
 }
@@ -98,14 +118,17 @@ func (c *Collector) SetFromStats(s Stats) {
 	c.Observe(MetricLeaderQuorum, float64(s.LeaderQuorum))
 	c.Observe(MetricCommittedIndex, float64(s.CommittedIndex))
 	c.Observe(MetricAppliedIndex, float64(s.AppliedIndex))
+	c.Observe(MetricFollowerLag, float64(s.FollowerLag))
 	c.Observe(MetricLearnerCatchupProgress, s.LearnerCatchupPercent)
 	c.Observe(MetricLeaseRevokeWait, s.LeaseRevokeWaitMeanMs)
 	c.Observe(MetricLockWait, s.LockWaitMeanMs)
 	c.Observe(MetricAmbiguousOpsTotal, float64(s.AmbiguousOps))
+	c.Observe(MetricChunkChecksumFailures, float64(s.ChunkChecksumFailures))
 	c.Observe(MetricRepairBacklog, float64(s.RepairBacklog))
 	c.Observe(MetricGCBacklog, float64(s.GCBacklog))
 	c.Observe(MetricFreeBytes, float64(s.FreeDiskBytes))
 	c.Observe(MetricCertificateExpiryHours, s.CertificateExpiryHours)
+	c.Observe(MetricCheckpoint, float64(s.CheckpointIndex))
 }
 
 // ErrCollectorClosed marks collector misuse.

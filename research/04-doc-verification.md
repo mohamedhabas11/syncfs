@@ -116,3 +116,6 @@ reconciled to it; no `internal/` or `cmd/` changes).
 ## New engineer path (docs only)
 
 `docs/getting-started.md` (fleet `docker compose build` + `go test ./... -race`) + `docs/architecture/index.md` (components, write/read diagrams, invariants, failure model) + `docs/reference/cli.md` (stubs + exit codes) + `docs/failure-semantics.md` (Inv.3/4/5/6/10 behavior). Run `python3 -m mkdocs build --strict` to verify docs; `docker compose run --rm node-a go test ./... -count=1 -race` to verify code.
+
+## CLEARED (2026-11-09)
+Doc corrections retained; observability + audit + journal fixes above verified by new tests; no further doc drift found (`mkdocs build --strict` PASS, `git diff --check` clean). Live truth is docs/ + known-limitations; this file is history.

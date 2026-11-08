@@ -103,7 +103,7 @@ func Open(opts Options) (*Storage, error) {
 	}
 	s := &Storage{dir: opts.Dir, file: f, hooks: opts.Hooks, initialPeers: opts.InitialPeers}
 	// Restore snapshot first (if present) so replay skips covered entries and
-	// FirstIndex/ConfState survive restarts.
+	// FirstIndex/ConfState survive restarts. A corrupt snapshot fails closed.
 	if snap, err := snapshot.ReadSnapshotFile(opts.Dir); err == nil {
 		if snap.Metadata.Index != 0 {
 			s.snapshot = snap
@@ -112,6 +112,9 @@ func Open(opts Options) (*Storage, error) {
 				s.hardState.Term = snap.Metadata.Term
 			}
 		}
+	} else if !errors.Is(err, snapshot.ErrEmpty) {
+		_ = f.Close()
+		return nil, fmt.Errorf("wal: restore snapshot: %w", err)
 	}
 	if err := s.replay(); err != nil {
 		_ = f.Close()

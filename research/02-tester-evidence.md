@@ -1,5 +1,7 @@
 # Tester Evidence — SyncFS Adversarial Testing
 
+> **CLEARED (2026-11-09):** 30 original attacker findings are fixed and checked in as regressions (`TestEdgeCases` C1–C8, `driver_gap_test.go`, `verify_conn_test.go`, `role_test.go`, `generation_test.go`, `journal_ttl_test.go`, `audit`, `stress_chaos_test.go`). Residual cross-inode deadlock (j1) fixed by walking all queues; flaky driver test deflaked. Remaining UNVERIFIED items (real ENOSPC fill, 5 s deadline timing, live snapshot transfer) are hardware/fleet-gated — see `research/05-chaos-stress.md` caveats and `docs/spec/status.md` §11 UNVERIFIED. Live register is `docs/known-limitations.md`.
+
 Date: 2026-11-08. Environment: Go 1.26.0 (`GOTOOLCHAIN=local`,
 host `darwin/arm64` via
 `/private/var/folders/n_/_hxsf0_n5rsd_3bg3vlh122h0000gn/T/opencode/go1.26/bin/go`)

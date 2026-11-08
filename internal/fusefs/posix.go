@@ -89,7 +89,10 @@ func (h *Handler) WriteFile(name string, at int64, data []byte) (uint32, syscall
 	copy(ns.data[at:end], data)
 	ns.mtime = time.Now()
 	if h.syncer == nil {
-		h.syncer = NoopSyncer{}
+		// Strict handler with no coordinator wired: fail closed (Inv.10).
+		ns.data = prevData
+		ns.mtime = prevMtime
+		return 0, syscall.EIO
 	}
 	if err := h.syncer.OnWrite(name, at, append([]byte(nil), data...)); err != nil {
 		ns.data = prevData

@@ -1,5 +1,8 @@
 # Critic findings — SyncFS
 
+> **CLEARED (2026-11-09):** Mechanical findings (9 CRITICAL + 9 MAJOR in §§1–5)
+> are addressed in the loop (commits `3cbdc5f`, `18e2780`, `b649526`, G5–G9 + Batch B–D below) and verified by `go vet` + `go test ./... -race` green + `TestEdge` C1–C8 + chaos harness. Remaining integration items (Raft-commit write path, Inv.5 lock/lease quorum, BindProto daemon wiring, GC Delete caller pins, CLI execution) are tracked as PARTIAL in `docs/known-limitations.md` (#10, #14–#17) and `docs/spec/status.md` — not claimed as fixed here. This file is retained as history; the live register is `docs/known-limitations.md`.
+
 - Repo: `/Users/mohamed/syncfs`
 - Commit: `0fef618f7897b12e39b32557d99240d8ac1f12a2` (HEAD at audit start; baseline `55344ed` for M1-M4 claims checked in parallel)
 - Date: 2026-11-08

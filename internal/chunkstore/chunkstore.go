@@ -39,6 +39,7 @@ type ChunkID [32]byte
 // the write coordinator's job, M2-05).
 type Receipt struct {
 	ChunkID         ChunkID
+	PeerID          uint64 // voter id that issued the receipt (spec §8.2 step 5)
 	StoreGeneration uint64
 	VerifiedBytes   uint64
 }
@@ -274,6 +275,18 @@ func (s *Store) Has(id ChunkID) bool {
 	defer s.mu.Unlock()
 	_, err := s.lookupLocked(id)
 	return err == nil
+}
+
+// Delete removes the index entry for id (GC reclamation). Pack bytes become
+// unreachable (reclaimed by later pack compaction); Has then reports false
+// and Get returns ErrNotFound.
+func (s *Store) Delete(id ChunkID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
+	}
+	return s.db.Delete(id[:], pebble.Sync)
 }
 
 // Close fsyncs and closes the store.

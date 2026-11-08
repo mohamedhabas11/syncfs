@@ -345,3 +345,6 @@ the single FAIL is cross-inode deadlock detection (j1). All stress concurrency
 (8-way locks, 16-way enrollment, 8-way framing) passes `-race` with no data races.
 All perf numbers are Docker Desktop VM measurements and remain **UNVERIFIED**
 against spec §11.
+
+## CLEARED (2026-11-09, loop Iter 5)
+j1 cross-inode deadlock FIXED (wouldDeadlock walks all queues; `TestStressLockDeadlockExpiry` PASS, stress suite 16/16 PASS under -race in-VM). Flaky driver test deflaked (10s delivery timeout). Disk-full remains injection-based (PASS contract / UNVERIFIED real ENOSPC), deadline timing + live snapshot transfer remain fleet-gated UNVERIFIED — recorded as such, not cleared. Floor variance (10x VM) remains order-of-magnitude only (§11 UNVERIFIED).

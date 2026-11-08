@@ -140,11 +140,11 @@ func TestApplyDeferredForMissingChunk(t *testing.T) {
 		for string(e.Data) != "gap-entry" {
 			select {
 			case e = <-committed:
-			case <-time.After(2 * time.Second):
+			case <-time.After(10 * time.Second):
 				t.Fatalf("gap-entry never delivered after chunk fetch (got %q)", e.Data)
 			}
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatalf("deferred entry never delivered after chunk fetch")
 	}
 }

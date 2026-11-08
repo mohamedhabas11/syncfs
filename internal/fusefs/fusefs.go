@@ -84,10 +84,22 @@ type Handler struct {
 	syncer Syncer // coordinator seam (M5 wires real volume coordinator)
 }
 
-// NewHandler builds a handler with a root directory.
+// NewHandler builds a handler with a root directory. It installs a NoopSyncer
+// (acknowledges writes unconditionally) and is the TEST surface only — it is
+// NOT a strict mount. Production mounts must use NewStrictHandler and wire a
+// real coordinator via SetSyncer; otherwise writes are silently local (Inv.10).
 func NewHandler(volume string) *Handler {
 	r := &NodeState{kind: KDir, mode: 0755, uid: 0, gid: 0, children: map[string]*NodeState{}, mtime: time.Now()}
+	_ = volume
 	return &Handler{root: r, syncer: NoopSyncer{}}
+}
+
+// NewStrictHandler builds a fail-closed handler for production mounts: with
+// no coordinator wired (nil syncer), writes return EIO instead of ack.
+func NewStrictHandler(volume string) *Handler {
+	h := NewHandler(volume)
+	h.syncer = nil
+	return h
 }
 
 // MountOpts returns mount options for the strict profile.

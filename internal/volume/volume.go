@@ -55,12 +55,13 @@ func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunk
 			return nil, err
 		}
 		var this []chunkstore.Receipt
-		for _, s := range c.stores {
+		for peerID, s := range c.stores {
 			cid, rc, err := s.Put(data)
 			if err != nil {
 				continue // this voter cannot make it durable
 			}
 			_ = cid
+			rc.PeerID = peerID
 			this = append(this, rc)
 		}
 		if len(this) < c.quorum {
@@ -72,8 +73,11 @@ func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunk
 }
 
 // ProposeCommand executes a metadata-only command path: idempotent op-ID →
-// apply. Raft-ordered proposal lands when the state machine rides Raft in
-// M2-06; caller retries never double-apply (op-ID retained).
+// apply. For WRITE_RANGES the caller MUST have attached majority
+// PreparedChunks receipts (from WriteChunks) to the command; proposals
+// without a quorum of distinct-peer receipts are refused (payload before
+// reference, Inv.3). Raft-ordered commit lands when the state machine rides
+// Raft in M2-06; caller retries never double-apply (op-ID retained).
 func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *syncfsapi.Command) (metadata.OpResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -82,6 +86,22 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 	}
 	if r, ok := c.fsm.GetOp(opID); ok {
 		return *r, nil
+	}
+	if cmd.Kind == syncfsapi.CommandKind_WRITE_RANGES {
+		rc := cmd.GetPreparedChunks()
+		if len(rc) == 0 {
+			return metadata.OpResult{}, fmt.Errorf("volume: WRITE_RANGES without PreparedChunks: %w", ErrNoQuorum)
+		}
+		peers := map[string]struct{}{}
+		for _, r := range rc {
+			if len(r.GetPeerId()) == 0 {
+				return metadata.OpResult{}, fmt.Errorf("volume: receipt without peer: %w", ErrNoQuorum)
+			}
+			peers[string(r.GetPeerId())] = struct{}{}
+		}
+		if len(peers) < c.quorum {
+			return metadata.OpResult{}, fmt.Errorf("volume: WRITE_RANGES receipts from %d distinct peers (need %d): %w", len(peers), c.quorum, ErrNoQuorum)
+		}
 	}
 	c.nextIdx++
 	idx := c.nextIdx

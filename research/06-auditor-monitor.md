@@ -152,3 +152,6 @@ Spec §9 (§386): “Membership, certificate, volume configuration, and forced r
 - `go test ./test/benchmark/... -run XXX -bench 'Edge|BenchmarkWorkloadQuorumWrite' -benchtime=100x -count=1` → see §2.2 (55.628s; `BenchmarkWorkloadQuorumWrite` ran n=1000 per `workload_test.go:102`).
 - `docker compose ps` / `docker ps -a` / `docker inspect` / `docker logs` / `docker volume ls` → idle `sleep infinity` placeholders, no healthchecks, local volumes on `linux/aarch64` VM; fleet-behavior **UNVERIFIED**.
 - Commit/branch state at audit: `b649526` (+ dirty docs/bench harness per `git status`), benchmarks commit `d0adf1d`.
+
+## CLEARED (2026-11-09, loop Iter 5)
+Observability fixed (dup alias removed, HELP/counter typing, FollowerLag/ChunkChecksumFailures/Checkpoint fed, /metrics+/healthz); audit sink internal/audit (hash chain + test); Redact vacuous test fixed; journal at-persistence + fold-persist + 10m TTL/oldest-first prune. Residual PARTIAL: histogram buckets/labels, audit wiring into member/auth daemon paths, systemd notify (daemon CLI still stubs — M5). Vet/test green, fleet STILL UNVERIFIED (no daemon serving).

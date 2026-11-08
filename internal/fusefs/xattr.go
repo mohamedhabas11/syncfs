@@ -13,7 +13,9 @@ type Syncer interface {
 	OnWrite(name string, at int64, data []byte) error
 }
 
-// NoopSyncer is the default (in-memory tree; fail-closed on unknown).
+// NoopSyncer is the test-double syncer for NewHandler (acknowledges writes).
+// It is NOT a production coordinator; strict mounts must use NewStrictHandler
+// plus a real coordinator via SetSyncer.
 type NoopSyncer struct{}
 
 func (NoopSyncer) OnWrite(name string, at int64, data []byte) error { return nil }

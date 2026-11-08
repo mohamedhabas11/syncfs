@@ -71,6 +71,18 @@ func NewManager() *Manager {
 	}
 }
 
+// Clone deep-copies granted lock state (queues are not cloned: atomicity for
+// Try/Release only). Used by metadata Apply for atomic lock commands.
+func (m *Manager) Clone() *Manager {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := &Manager{byID: make(map[[16]byte][]Lock, len(m.byID)), clock: m.clock, queues: map[queueKey][]*waiter{}}
+	for k, v := range m.byID {
+		c.byID[k] = append([]Lock(nil), v...)
+	}
+	return c
+}
+
 // conflicting reports whether two ranges/modes clash. Family separation is
 // total (POSIX lock families have distinct delivery): flock and fcntl never
 // interfere with each other even on the same inode+range.
@@ -203,26 +215,24 @@ func (m *Manager) tryLocked(l Lock) bool {
 	return true
 }
 
-// wouldDeadlockLocked reports whether granting/waiting for l would close a
-// wait-for cycle: l's owner waits on holders whose wait chains lead back to
-// l's owner. Caller holds m.mu.
+// wouldDeadlockLocked reports whether waiting for l would close a wait-for
+// cycle (cross-inode included: all queues are walked). Caller holds m.mu.
 func (m *Manager) wouldDeadlockLocked(l Lock) bool {
-	// Direct holders blocking l.
+	// Direct holders blocking l (same inode), plus queued waiters on l's
+	// (Inode, Family) queue that conflict with l.
 	blockers := map[string]bool{}
 	for _, held := range m.byID[l.InodeID] {
 		if held.Owner != l.Owner && conflicting(held, l) {
 			blockers[held.Owner] = true
 		}
 	}
-	// Queued waiters ahead of l that conflict with l also block l (FIFO).
 	key := queueKey{inode: l.InodeID, family: l.Family}
 	for _, w := range m.queues[key] {
 		if w.key != l.Owner && conflicting(w.lock, l) {
 			blockers[w.key] = true
 		}
 	}
-	// BFS over wait-for edges from blockers: X waits on Y if X's queued lock
-	// conflicts with a lock held by Y. Cycle iff l.Owner is reachable.
+	// BFS over wait-for edges across ALL queues/inodes.
 	seen := map[string]bool{}
 	queue := make([]string, 0, len(blockers))
 	for b := range blockers {
@@ -238,17 +248,25 @@ func (m *Manager) wouldDeadlockLocked(l Lock) bool {
 			continue
 		}
 		seen[cur] = true
-		// What does cur wait on?
-		for _, w := range m.queues[queueKey{inode: l.InodeID, family: l.Family}] {
-			if w.key != cur {
-				continue
-			}
-			for _, held := range m.byID[w.lock.InodeID] {
-				if held.Owner != cur && conflicting(held, w.lock) && held.Owner == l.Owner {
-					return true
+		// What does cur wait on? Every queued lock owned by cur.
+		for _, q := range m.queues {
+			for _, w := range q {
+				if w.key != cur {
+					continue
 				}
-				if held.Owner != cur && !seen[held.Owner] {
-					queue = append(queue, held.Owner)
+				for _, held := range m.byID[w.lock.InodeID] {
+					if held.Owner == cur {
+						continue
+					}
+					if !conflicting(held, w.lock) {
+						continue
+					}
+					if held.Owner == l.Owner {
+						return true
+					}
+					if !seen[held.Owner] {
+						queue = append(queue, held.Owner)
+					}
 				}
 			}
 		}

@@ -37,3 +37,15 @@ func TestOpenRejectsODIRECT(t *testing.T) {
 		t.Fatalf("O_RDWR without O_DIRECT must succeed, got %v", e)
 	}
 }
+
+// TestStrictHandlerFailsClosed verifies a production (nil-syncer) handler
+// returns EIO instead of silently acknowledging writes (Inv.10).
+func TestStrictHandlerFailsClosed(t *testing.T) {
+	h := NewStrictHandler("v")
+	if _, e := h.CreateFile("f", 0644, 0, 0); e != 0 {
+		t.Fatal(e)
+	}
+	if _, e := h.WriteFile("f", 0, []byte("x")); e != syscall.EIO {
+		t.Fatalf("strict write without coordinator must be EIO, got %v", e)
+	}
+}
