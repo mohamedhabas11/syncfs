@@ -5,7 +5,6 @@ package locks
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -61,13 +60,20 @@ func NewManager() *Manager {
 	}
 }
 
-// conflicting reports whether two ranges/modes clash.
+// conflicting reports whether two ranges/modes clash. Family separation is
+// total (POSIX lock families have distinct delivery): flock and fcntl never
+// interfere with each other even on the same inode+range.
 func conflicting(a, b Lock) bool {
-	if a.InodeID != b.InodeID {
+	if a.InodeID != b.InodeID || a.Family != b.Family {
 		return false
 	}
 	// disjoint ranges never clash
 	if (a.End != 0 && a.End <= b.Start) || (b.End != 0 && b.End <= a.Start) {
+		return false
+	}
+	// Same owner never blocks itself (POSIX merges/converts same-process locks).
+	if a.Owner == b.Owner {
+		// an old overlapping same-owner lock is superseded by the newcomer
 		return false
 	}
 	// shared-shared is fine; any exclusive clashes
@@ -75,6 +81,7 @@ func conflicting(a, b Lock) bool {
 }
 
 // Try locks non-blocking; ErrWouldBlock if held by anyone else.
+// Same-owner overlapping locks supersede (merge/convert); never self-block.
 func (m *Manager) Try(l Lock) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -86,8 +93,38 @@ func (m *Manager) Try(l Lock) error {
 			return fmt.Errorf("%w: held by %s mode %d", ErrWouldBlock, held.Owner, held.Mode)
 		}
 	}
+	// POSIX merge/convert: drop same-owner overlapping locks being superseded.
+	m.byID[l.InodeID] = purgeSameOwnerOverlapLocked(m.byID[l.InodeID], l)
 	m.byID[l.InodeID] = append(m.byID[l.InodeID], l)
 	return nil
+}
+
+func purgeSameOwnerOverlapLocked(held []Lock, l Lock) []Lock {
+	if len(held) == 0 {
+		return held
+	}
+	out := held[:0]
+	for _, h := range held {
+		if h.Owner == l.Owner && h.Family == l.Family &&
+			!(h.Start == l.Start && h.End == l.End) {
+			// overlapping ranges supersede; disjoint or exact idempotence are kept.
+			if overlap(h, l) {
+				continue
+			}
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+func overlap(a, b Lock) bool {
+	if a.End != 0 && a.End <= b.Start {
+		return false
+	}
+	if b.End != 0 && b.End <= a.Start {
+		return false
+	}
+	return true
 }
 
 // BlockingGrant waits with fair queuing until the range is free or the ctx
@@ -108,7 +145,6 @@ func (m *Manager) BlockingGrant(l Lock) error {
 			ok := m.tryLocked(l)
 			if ok {
 				m.queues[l.InodeID] = m.queues[l.InodeID][1:]
-				m.usableLocked(l.InodeID)
 				m.mu.Unlock()
 				return nil
 			}
@@ -123,13 +159,13 @@ func (m *Manager) tryLocked(l Lock) bool {
 			return false
 		}
 	}
+	m.byID[l.InodeID] = purgeSameOwnerOverlapLocked(m.byID[l.InodeID], l)
 	m.byID[l.InodeID] = append(m.byID[l.InodeID], l)
 	return true
 }
 
-func (m *Manager) usableLocked(inode [16]byte) { sort.Slice(m.byID[inode], nil) }
-
-// Release unlocks one owner+range+mode and wakes the queue head.
+// Release unlocks one owner+range+mode and nudges the queue head
+// (the head dequeues itself when it acquires — no starvation).
 func (m *Manager) Release(l Lock) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -142,8 +178,11 @@ func (m *Manager) Release(l Lock) {
 	}
 	m.byID[l.InodeID] = out
 	if q := m.queues[l.InodeID]; len(q) > 0 {
-		close(q[0].ready)
-		m.queues[l.InodeID] = q[1:]
+		select {
+		case <-q[0].ready:
+		default:
+			close(q[0].ready)
+		}
 	}
 }
 
@@ -166,7 +205,26 @@ func (m *Manager) ApplyReleases(owner string) {
 func (m *Manager) BindProto(cmd *syncfsapi.Command, idx uint64) error {
 	if cmd.Kind == syncfsapi.CommandKind_LOCK_GRANT {
 		p := cmd.GetLockGrant()
-		return m.Try(Lock{Family: int(p.Family), Owner: p.OwnerKey, Mode: int(p.Mode)})
+		var ino [16]byte
+		copy(ino[:], p.InodeId)
+		return m.Try(Lock{InodeID: ino, Family: int(p.Family), Owner: p.OwnerKey, Start: p.RangeStart, End: p.RangeEnd, Mode: int(p.Mode)})
+	}
+	if cmd.Kind == syncfsapi.CommandKind_LOCK_RELEASE {
+		p := cmd.GetLockRelease()
+		var ino [16]byte
+		copy(ino[:], p.InodeId)
+		// Release all locks of this owner on this inode (full-width).
+		m.mu.Lock()
+		held := m.byID[ino]
+		out := held[:0]
+		for _, h := range held {
+			if h.Owner != p.OwnerKey {
+				out = append(out, h)
+			}
+		}
+		m.byID[ino] = out
+		m.mu.Unlock()
+		return nil
 	}
 	return nil
 }
