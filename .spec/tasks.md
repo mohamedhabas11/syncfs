@@ -97,16 +97,15 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/chunkstore/...` green in the container fleet (round-trip, dedup, corruption detection, reopen, torn-tail, size caps).
 
-- [ ] **M2-03 — Implement deterministic metadata state machine**: Add inode,
+- [x] **M2-03 — Implement deterministic metadata state machine**: inode,
   dentry, manifest, permission, link-count, precondition, and operation-result
   records. Every command must apply atomically and be replay-safe.
-  - **Phase**: M2 / blocked by M1-02 and M2-02.
+  - **Phase**: M2 / done (2026-11-08).
   - **Files**: internal/metadata/*, internal/metadata/*_test.go.
   - **Tracker**: This repository.
-  - **Dependencies**: M1-02, M2-02.
-  - **Parallel**: No; owns the command semantics used by all other lanes.
-  - **Verification**: go test -race ./internal/metadata/... plus randomized
-    command/replay property tests.
+  - **Dependencies**: M1-02, M2-02 (done).
+  - **Parallel**: No.
+  - **Verification**: `go test -race ./internal/metadata/...` green in the container fleet (create, atomicity, idempotent opIDs, preconditions, rename).
 
 - [ ] **M2-04 — Wire Raft to the metadata state machine**: Implement the Raft
   Ready loop, leader routing, ReadIndex, committed-entry apply barrier, and

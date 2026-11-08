@@ -10,3 +10,4 @@ Autonomous build log. One line per milestone: id, commit, commands, result.
 | 2026-11-08 | M1-04 QUIC transport | 720ff6d | go test ./internal/transport/... -race (fleet) | PASS |
 | 2026-11-08 | M2-01 WAL + snapshot store | 2645e09 | go test ./internal/raftstore/... -race (fleet) | PASS |
 | 2026-11-08 | M2-02 chunkstore packs+BLAKE3+Pebble | TBD | go test ./internal/chunkstore/... -race (fleet) | PASS |
+| 2026-11-08 | M2-03 metadata state machine | TBD | go test ./internal/metadata/... -race (fleet) | PASS |
