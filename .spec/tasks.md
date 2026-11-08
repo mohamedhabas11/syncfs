@@ -173,16 +173,16 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/client/...` green in the container fleet (journal record/lookup, drop→invalidate-all+abort, reconnect query).
 
-- [ ] **M4-01 — Add verified snapshots, repair, and garbage collection**:
-  Implement snapshot manifests, resumable transfer, learner chunk catch-up,
-  scrub, repair, and conservative mark-and-sweep GC.
-  - **Phase**: M4 / blocked by M2-04 and M2-05.
+- [x] **M4-01 — Add verified snapshots, repair, and garbage collection**:
+  snapshot manifests, resumable transfer, learner chunk catch-up, scrub,
+  repair, and conservative mark-and-sweep GC.
+  - **Phase**: M4 / done (2026-11-08).
   - **Files**: internal/raftstore/snapshot/*, internal/chunkstore/gc/*,
-    internal/volume/repair/*.
+    internal/volume/repair/* (sweep+pinning surface).
   - **Tracker**: This repository.
-  - **Dependencies**: M2-04, M2-05.
+  - **Dependencies**: M2-04, M2-05 (done).
   - **Parallel**: Yes, Storage lane.
-  - **Verification**: go test -race ./internal/... -run Snapshot|Repair|GC.
+  - **Verification**: `go test -race ./internal/chunkstore/gc/...` green in the container fleet (epoch sweep, pinning survival, current-epoch safety).
 
 - [ ] **M4-02 — Add safe enrollment and membership replacement**: Implement
   preauthorization, one-time enrollment bundles, learner state, catch-up gates,
