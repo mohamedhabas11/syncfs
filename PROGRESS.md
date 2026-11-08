@@ -63,3 +63,4 @@ bugs found+fixed by tests this session: (1) lock-range disjoint logic was
 inverted; (2) 3-node election deadlocked on lockstep ticking with PreVote
 (each node self-voted first) — fixed by single-node ticking per round in the
 mesh harness (per etcd follower-election design).
+RELEASE READY v0.1.0
