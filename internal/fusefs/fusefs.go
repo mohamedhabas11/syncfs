@@ -69,18 +69,20 @@ type NodeState struct {
 	parent   *NodeState
 	children map[string]*NodeState
 	mtime    time.Time
+	xattrs   map[string][]byte
 }
 
 // Handler holds the in-memory tree.
 type Handler struct {
-	mu   sync.RWMutex
-	root *NodeState
+	mu     sync.RWMutex
+	root   *NodeState
+	syncer Syncer // coordinator seam (M5 wires real volume coordinator)
 }
 
 // NewHandler builds a handler with a root directory.
 func NewHandler(volume string) *Handler {
 	r := &NodeState{kind: KDir, mode: 0755, children: map[string]*NodeState{}, mtime: time.Now()}
-	return &Handler{root: r}
+	return &Handler{root: r, syncer: NoopSyncer{}}
 }
 
 // MountOpts returns mount options for the strict profile.

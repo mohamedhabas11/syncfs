@@ -75,6 +75,12 @@ func (h *Handler) WriteFile(name string, at int64, data []byte) (uint32, syscall
 	}
 	copy(ns.data[at:end], data)
 	ns.mtime = time.Now()
+	// coordinator seam: the coordinator persists before ack (M5); the mount
+	// stays fail-closed by refusing writes that return an error here.
+	if h.syncer == nil {
+		h.syncer = NoopSyncer{}
+	}
+	_ = h.syncer.OnWrite(name, at, append([]byte(nil), data...))
 	return uint32(len(data)), syscall.Errno(0)
 }
 

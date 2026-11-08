@@ -24,6 +24,8 @@ Honest per-milestone state. Allowed: NOT_STARTED | PARTIAL | DONE | DEFERRED | B
 | M4-04 fault harness | DONE | `go test ./internal/testkit/...` PASS (66bd4db) |
 | M5-01 durability/HA/perf qualification | DEFERRED | ADR-0001 (docs/adr/0001-defer-m5-qualification.md) — needs reference hardware |
 | M5-02 target-app qualification | DEFERRED | Same ADR; needs a real HA suite target |
+| Observability (M4-03 tail) | DONE | `go test ./internal/observability/... -race` PASS |
+| Xattr user.* surface | DONE | `TestXattrUserNamespaceOnly` |
 
 Release readiness: **v0.1.0 pre-1.0, foundation complete; not production ready**.
 Nothing here is a compatibility or performance certification.
