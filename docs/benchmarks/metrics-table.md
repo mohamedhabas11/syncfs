@@ -61,7 +61,7 @@ Throughput flat vs clients on named volume (fsync-serialized); p50 latency grows
 | G5 Driver gap gating | GREEN: `ChunkGap`/`RetryApply` deferred apply, non-blocking `Step`, voter validation (`TestApplyDeferredForMissingChunk`); auto-tick callers must consult `ChunkGap` (see `known-limitations.md` #14) |
 | G6 Auth (atomic + VerifyConnection+role) | PARTIAL: atomic double-spend + empty GREEN (edge C5), `VerifyConnection` wired + `AcceptClassifiedStream` role-enforced (`TestVerifyConnectionEnforcesCluster`, `TestPerStreamRoleEnforcement`); opener `OpenClassifiedStream` role check is caller duty (see `known-limitations.md` #10) |
 | G7 FUSE (fail-closed/caps/Lookup/Open) | PARTIAL: WriteFile fail-closed + caps GREEN (edge C6), nil-handler + O_DIRECT hardening (`TestNilHandlerFailsClosed`, `TestOpenRejectsODIRECT`); full inode tree (Lookup non-nil, Readdir/Forget) still pending (#15) |
-| G8 Locks end-to-end (ctx/EDEADLK/wake/wiring) | PARTIAL: family/BindProto/steal GREEN; BlockingGrant(ctx)/EDEADLK/wake/wiring remain |
+| G8 Locks end-to-end (ctx/EDEADLK/wake/wiring) | GREEN for cancellable wait + deadlock + family queues (`BlockingGrantCtx`, `ErrDeadlock`, `TestDeadlockDetected`); `BlockingGrant` wrapper retained (unbounded, compat only); state-machine `BindProto` wiring still to verify end-to-end |
 | G9 Leases/journal/op-IDs | PARTIAL: InvalidateAll leases GREEN (edge C8); Valid Generation + journal durability remain |
 | G10 Honesty+harness | PARTIAL: fresh-payload bench GREEN, edge.sh + TestEdge checked in; status demotions + full attacker adoption remain |
 

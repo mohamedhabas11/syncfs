@@ -3,6 +3,7 @@
 package locks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -26,6 +27,8 @@ const (
 
 var (
 	ErrWouldBlock = errors.New("locks: would block")
+	// ErrDeadlock is returned when a wait would create a cycle (EDEADLK).
+	ErrDeadlock = errors.New("locks: deadlock detected")
 )
 
 // Lock is one granted lock (one per owner key, range).
@@ -38,16 +41,24 @@ type Lock struct {
 	Mode    int
 }
 
+// queueKey separates wait queues by (Inode, Family): flock waiters never
+// head-of-line block fcntl/OFD waiters on the same inode.
+type queueKey struct {
+	inode  [16]byte
+	family int
+}
+
 // Manager owns lock state.
 type Manager struct {
 	mu     sync.Mutex
 	byID   map[[16]byte][]Lock
 	clock  func() time.Time
-	queues map[[16]byte][]*waiter
+	queues map[queueKey][]*waiter
 }
 
 type waiter struct {
 	key   string
+	lock  Lock
 	ready chan struct{}
 }
 
@@ -56,7 +67,7 @@ func NewManager() *Manager {
 	return &Manager{
 		byID:   map[[16]byte][]Lock{},
 		clock:  time.Now,
-		queues: map[[16]byte][]*waiter{},
+		queues: map[queueKey][]*waiter{},
 	}
 }
 
@@ -86,7 +97,7 @@ func (m *Manager) Try(l Lock) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, held := range m.byID[l.InodeID] {
-		if held.Owner == l.Owner && held.Start == l.Start && held.End == l.End && held.Mode == l.Mode {
+		if held.Owner == l.Owner && held.Family == l.Family && held.Start == l.Start && held.End == l.End && held.Mode == l.Mode {
 			return nil // idempotent
 		}
 		if conflicting(held, l) {
@@ -105,12 +116,10 @@ func purgeSameOwnerOverlapLocked(held []Lock, l Lock) []Lock {
 	}
 	out := held[:0]
 	for _, h := range held {
-		if h.Owner == l.Owner && h.Family == l.Family &&
-			!(h.Start == l.Start && h.End == l.End) {
-			// overlapping ranges supersede; disjoint or exact idempotence are kept.
-			if overlap(h, l) {
-				continue
-			}
+		if h.Owner == l.Owner && h.Family == l.Family && overlap(h, l) {
+			// Superseded (including exact-range upgrades: the old entry is
+			// dropped; exact idempotence is handled by the caller).
+			continue
 		}
 		out = append(out, h)
 	}
@@ -127,24 +136,54 @@ func overlap(a, b Lock) bool {
 	return true
 }
 
-// BlockingGrant waits with fair queuing until the range is free or the ctx
-// expires (>= waitCap enforced by caller timeout).
+// BlockingGrant waits with fair queuing until the range is free. It is the
+// unbounded variant (no deadline) kept for compatibility; prefer
+// BlockingGrantCtx in new callers (cancellable, EDEADLK-aware).
 func (m *Manager) BlockingGrant(l Lock) error {
+	return m.BlockingGrantCtx(context.Background(), l)
+}
+
+// BlockingGrantCtx waits with fair queuing until the range is free or ctx is
+// done. Returns ctx.Err() on cancellation, ErrDeadlock if the wait would
+// form a cycle, or ErrWouldBlock-free success (nil) once granted.
+func (m *Manager) BlockingGrantCtx(ctx context.Context, l Lock) error {
+	key := queueKey{inode: l.InodeID, family: l.Family}
+	w := &waiter{key: l.Owner, lock: l, ready: make(chan struct{})}
 	m.mu.Lock()
-	w := &waiter{key: l.Owner, ready: make(chan struct{})}
-	m.queues[l.InodeID] = append(m.queues[l.InodeID], w)
+	if m.wouldDeadlockLocked(l) {
+		m.mu.Unlock()
+		return ErrDeadlock
+	}
+	m.queues[key] = append(m.queues[key], w)
 	m.mu.Unlock()
 
 	ticker := time.NewTicker(1 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		<-ticker.C
+		select {
+		case <-ctx.Done():
+			m.mu.Lock()
+			if q := m.queues[key]; len(q) > 0 {
+				out := q[:0]
+				for _, x := range q {
+					if x != w {
+						out = append(out, x)
+					}
+				}
+				m.queues[key] = out
+			}
+			m.mu.Unlock()
+			return ctx.Err()
+		case <-w.ready:
+			// Nudge from Release/ApplyReleases: fall through to the attempt below.
+		case <-ticker.C:
+		}
 		m.mu.Lock()
 		// fairness: only the head of the queue may attempt Try
-		if len(m.queues[l.InodeID]) > 0 && m.queues[l.InodeID][0] == w {
+		if q := m.queues[key]; len(q) > 0 && q[0] == w {
 			ok := m.tryLocked(l)
 			if ok {
-				m.queues[l.InodeID] = m.queues[l.InodeID][1:]
+				m.queues[key] = m.queues[key][1:]
 				m.mu.Unlock()
 				return nil
 			}
@@ -164,6 +203,59 @@ func (m *Manager) tryLocked(l Lock) bool {
 	return true
 }
 
+// wouldDeadlockLocked reports whether granting/waiting for l would close a
+// wait-for cycle: l's owner waits on holders whose wait chains lead back to
+// l's owner. Caller holds m.mu.
+func (m *Manager) wouldDeadlockLocked(l Lock) bool {
+	// Direct holders blocking l.
+	blockers := map[string]bool{}
+	for _, held := range m.byID[l.InodeID] {
+		if held.Owner != l.Owner && conflicting(held, l) {
+			blockers[held.Owner] = true
+		}
+	}
+	// Queued waiters ahead of l that conflict with l also block l (FIFO).
+	key := queueKey{inode: l.InodeID, family: l.Family}
+	for _, w := range m.queues[key] {
+		if w.key != l.Owner && conflicting(w.lock, l) {
+			blockers[w.key] = true
+		}
+	}
+	// BFS over wait-for edges from blockers: X waits on Y if X's queued lock
+	// conflicts with a lock held by Y. Cycle iff l.Owner is reachable.
+	seen := map[string]bool{}
+	queue := make([]string, 0, len(blockers))
+	for b := range blockers {
+		queue = append(queue, b)
+	}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == l.Owner {
+			return true
+		}
+		if seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		// What does cur wait on?
+		for _, w := range m.queues[queueKey{inode: l.InodeID, family: l.Family}] {
+			if w.key != cur {
+				continue
+			}
+			for _, held := range m.byID[w.lock.InodeID] {
+				if held.Owner != cur && conflicting(held, w.lock) && held.Owner == l.Owner {
+					return true
+				}
+				if held.Owner != cur && !seen[held.Owner] {
+					queue = append(queue, held.Owner)
+				}
+			}
+		}
+	}
+	return false
+}
+
 // Release unlocks one owner+range+mode and nudges the queue head
 // (the head dequeues itself when it acquires — no starvation).
 func (m *Manager) Release(l Lock) {
@@ -177,7 +269,8 @@ func (m *Manager) Release(l Lock) {
 		}
 	}
 	m.byID[l.InodeID] = out
-	if q := m.queues[l.InodeID]; len(q) > 0 {
+	key := queueKey{inode: l.InodeID, family: l.Family}
+	if q := m.queues[key]; len(q) > 0 {
 		select {
 		case <-q[0].ready:
 		default:
@@ -187,6 +280,7 @@ func (m *Manager) Release(l Lock) {
 }
 
 // ApplyReleases drops all locks of an owner (session expiry, in Raft order).
+// It also nudges every queue head (wake) so waiters re-attempt promptly.
 func (m *Manager) ApplyReleases(owner string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -198,6 +292,16 @@ func (m *Manager) ApplyReleases(owner string) {
 			}
 		}
 		m.byID[id] = out
+	}
+	for _, q := range m.queues {
+		if len(q) == 0 {
+			continue
+		}
+		select {
+		case <-q[0].ready:
+		default:
+			close(q[0].ready)
+		}
 	}
 }
 

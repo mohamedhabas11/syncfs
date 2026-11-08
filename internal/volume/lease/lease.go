@@ -30,15 +30,27 @@ type Manager struct {
 	leases map[uint64]*Lease
 	clock  func() time.Time
 	ttl    time.Duration
+	// currentGen tracks the state machine generation per inode (set by the
+	// volume layer from metadata generations). Unknown inodes are ignored.
+	currentGen map[[16]byte]uint64
 }
 
 // NewManager builds a manager with the given TTLs.
 func NewManager(ttl time.Duration) *Manager {
 	return &Manager{
-		leases: map[uint64]*Lease{},
-		clock:  time.Now,
-		ttl:    ttl,
+		leases:     map[uint64]*Lease{},
+		clock:      time.Now,
+		ttl:        ttl,
+		currentGen: map[[16]byte]uint64{},
 	}
+}
+
+// SetCurrentGeneration records the state machine generation for inode.
+// Valid() then fails leases issued at an older generation (stale cache).
+func (m *Manager) SetCurrentGeneration(inode [16]byte, generation uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.currentGen[inode] = generation
 }
 
 // Grant issues a lease for inode at the current generation.
@@ -82,12 +94,16 @@ func (m *Manager) Ack(id uint64) error {
 	return nil
 }
 
-// Valid reports whether a lease may still be used (not revoked, unexpired).
+// Valid reports whether a lease may still be used (not revoked, unexpired,
+// and at the current inode generation when the generation is tracked).
 func (m *Manager) Valid(l *Lease) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.leases[l.ID]
 	if !ok || cur.Revoked || cur.Acked {
+		return false
+	}
+	if gen, tracked := m.currentGen[cur.InodeID]; tracked && cur.Generation != gen {
 		return false
 	}
 	return m.clock().Before(cur.ExpiresAt)

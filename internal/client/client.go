@@ -26,7 +26,7 @@ const (
 )
 
 // Journal is the bounded, durable client operation journal.
-// Retention: N=10,000 entries, 10-minute expiry (spec 5-4 retention).
+// Retention: N=10,000 entries, 10-minute expiry (spec §8.2 retention).
 // The minimum durable form is a single atomically-rewritten JSON file
 // (tmp + rename + fsync) in the journal dir; it survives client restart so
 // unknown ops are never silently retried blindly.
@@ -35,7 +35,10 @@ type Journal struct {
 	ops       map[[16]byte]entry
 	expired   map[[16]byte]bool
 	retention int
+	ttl       time.Duration
 	path      string
+	// clock is the time source (tests override for TTL).
+	clock func() time.Time
 }
 
 type entry struct {
@@ -45,7 +48,7 @@ type entry struct {
 
 // NewJournal builds a journal with the default retention (M1-02 numbers).
 func NewJournal() *Journal {
-	return &Journal{ops: map[[16]byte]entry{}, expired: map[[16]byte]bool{}, retention: 10000}
+	return &Journal{ops: map[[16]byte]entry{}, expired: map[[16]byte]bool{}, retention: 10000, ttl: 10 * time.Minute, clock: time.Now}
 }
 
 // NewJournalWithDir builds a journal persisted under dir (durable across
@@ -168,18 +171,39 @@ func (j *Journal) Lookup(opID [16]byte) (OpState, bool) {
 	if !ok {
 		return OpUnknown, false
 	}
+	if j.clock != nil && e.at.Add(j.ttl).Before(j.clock()) {
+		delete(j.ops, opID)
+		j.expired[opID] = true
+		return OpUnknown, false
+	}
 	return e.state, true
 }
 
 func (j *Journal) pruneLocked() {
-	if len(j.ops) < j.retention {
-		return
+	now := time.Now()
+	if j.clock != nil {
+		now = j.clock()
 	}
-	// drop oldest first (simple FIFO overflow)
-	for k := range j.ops {
-		delete(j.ops, k)
-		j.expired[k] = true
-		break
+	// TTL sweep: evict entries older than the retention window first.
+	for id, e := range j.ops {
+		if e.at.Add(j.ttl).Before(now) {
+			delete(j.ops, id)
+			j.expired[id] = true
+		}
+	}
+	// Capacity sweep: evict oldest first until under retention.
+	for len(j.ops) >= j.retention {
+		oldest := [16]byte{}
+		var oldestT time.Time
+		first := true
+		for id, e := range j.ops {
+			if first || e.at.Before(oldestT) {
+				oldest, oldestT = id, e.at
+				first = false
+			}
+		}
+		delete(j.ops, oldest)
+		j.expired[oldest] = true
 	}
 }
 
