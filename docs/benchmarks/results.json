@@ -1,0 +1,1 @@
+{"harness":"BenchmarkWorkloadQuorumWrite/1000x","env":{"image":"golang:1.26-alpine (syncfs-node-a fleet)","kernel":"Linux 4.x/5.x via Docker Desktop (ARM64)","go":"go1.26.10 linux/arm64","storage":"local TMP in dockers VM (no PLP claim)","network":"in-process mesh (no QUIC)"},"metrics":{"ops_per_second":21865,"p50_ms":0.021,"max_ms":2.163},"date":"2026-11-08"}
