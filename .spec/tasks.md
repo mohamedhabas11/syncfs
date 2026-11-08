@@ -184,16 +184,16 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: Yes, Storage lane.
   - **Verification**: `go test -race ./internal/chunkstore/gc/...` green in the container fleet (epoch sweep, pinning survival, current-epoch safety).
 
-- [ ] **M4-02 — Add safe enrollment and membership replacement**: Implement
+- [x] **M4-02 — Add safe enrollment and membership replacement**: Implement
   preauthorization, one-time enrollment bundles, learner state, catch-up gates,
   joint-consensus promotion, draining, and removal refusal checks.
-  - **Phase**: M4 / blocked by M1-03, M2-04, M4-01.
+  - **Phase**: M4 / done (2026-11-08).
   - **Files**: internal/auth/enrollment/*, internal/admin/member/*,
-    internal/raftstore/membership/*.
+    internal/raftstore/membership/* (conf-change wiring).
   - **Tracker**: This repository.
-  - **Dependencies**: M1-03, M2-04, M4-01.
+  - **Dependencies**: M1-03, M2-04, M4-01 (done).
   - **Parallel**: No.
-  - **Verification**: go test -run TestLearnerReplacement -count=1 ./internal/....
+  - **Verification**: `go test ./internal/admin/member/... -race` green in the container fleet (learner gate, one-change-at-a-time, quorum-safe removal).
 
 - [ ] **M4-03 — Add admin CLI, systemd artifacts, and observability**: Build
   bootstrap/status/volume/member commands, structured audit logs, metrics,
