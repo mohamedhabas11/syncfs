@@ -43,8 +43,12 @@ make fleet-test   # container fleet: docker compose run --rm node-a go test ./..
 ## Development containers (3-node fleet)
 
 The control/data-plane test fleet is `docker-compose.yml` — three `golang:1.26`
-services (`node-a`, `node-b`, `node-c`), each mounting the repo at `/src`.
-This is the primary dev loop; `make test` on the host is secondary.
+services (`node-a`, `node-b`, `node-c`). Code is shared read-only at `/src`;
+**data is not shared**: each node owns a private writable volume
+`/var/lib/syncfs` (named volumes `node-{a,b,c}-data`). Independent failure
+domains are the whole point — quorum, corruption, and repair tests are
+meaningless on shared mounts. This is the primary dev loop; host-side
+`make test` is secondary.
 
 ```text
 docker compose run --rm node-a go test ./... -count=1 -race   # one node
