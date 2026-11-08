@@ -89,17 +89,38 @@ type Storage struct {
 
 // Open replays (or creates) the WAL at dir and returns a Storage.
 func Open(opts Options) (*Storage, error) {
+	if err := os.MkdirAll(opts.Dir, 0755); err != nil {
+		return nil, fmt.Errorf("wal: mkdir: %w", err)
+	}
 	f, err := os.OpenFile(filepath.Join(opts.Dir, "wal.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("wal: open: %w", err)
 	}
+	// Durable file name: fsync the containing dir after create (spec §7.5).
+	if d, err := os.Open(opts.Dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 	s := &Storage{dir: opts.Dir, file: f, hooks: opts.Hooks, initialPeers: opts.InitialPeers}
+	// Restore snapshot first (if present) so replay skips covered entries and
+	// FirstIndex/ConfState survive restarts.
+	if snap, err := snapshot.ReadSnapshotFile(opts.Dir); err == nil {
+		if snap.Metadata.Index != 0 {
+			s.snapshot = snap
+			s.hardState.Commit = maxUint64(s.hardState.Commit, snap.Metadata.Index)
+			if snap.Metadata.Term > s.hardState.Term {
+				s.hardState.Term = snap.Metadata.Term
+			}
+		}
+	}
 	if err := s.replay(); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
 	return s, nil
 }
+
+var errCorruptRecord = errors.New("wal: corrupt record")
 
 func (s *Storage) replay() error {
 	data, err := io.ReadAll(s.file)
@@ -110,8 +131,14 @@ func (s *Storage) replay() error {
 	for off < len(data) {
 		rec, n, err := decodeRecord(data[off:])
 		if err != nil {
-			s.truncatedErr = fmt.Errorf("%w: %v", ErrTornRecord, err)
-			break
+			// Torn tail (incomplete tail write — never acked) truncates;
+			// mid-log CRC corruption fails closed (never silently drop
+			// committed entries, Inv.9).
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				s.truncatedErr = fmt.Errorf("%w: %v", ErrTornRecord, err)
+				break
+			}
+			return fmt.Errorf("%w: %v", errCorruptRecord, err)
 		}
 		if err := s.applyRecord(rec); err != nil {
 			return err
@@ -135,13 +162,19 @@ func (s *Storage) applyRecord(rec record) error {
 	case tagEntry:
 		var e raftpb.Entry
 		if err := e.Unmarshal(rec.payload); err != nil {
-			return fmt.Errorf("%w: entry unmarshal: %v", ErrTornRecord, err)
+			return fmt.Errorf("%w: entry unmarshal: %v", errCorruptRecord, err)
+		}
+		if e.Index == 0 {
+			return nil // snapshot dummy marker; skip index accounting
+		}
+		if e.Index <= s.snapshot.Metadata.Index {
+			return nil // already covered by restored snapshot
 		}
 		return s.appendEntryLocked(e)
 	case tagHardState:
 		var hs raftpb.HardState
 		if err := hs.Unmarshal(rec.payload); err != nil {
-			return fmt.Errorf("%w: hardstate unmarshal: %v", ErrTornRecord, err)
+			return fmt.Errorf("%w: hardstate unmarshal: %v", errCorruptRecord, err)
 		}
 		s.hardState = hs
 		return nil
@@ -154,11 +187,11 @@ func (s *Storage) appendEntryLocked(e raftpb.Entry) error {
 	if e.Index == 0 {
 		return nil
 	}
-	s.ents = append(s.ents, e)
-	last := s.snapshot.Metadata.Index + uint64(len(s.ents))
+	last := s.snapshot.Metadata.Index + uint64(len(s.ents)) + 1
 	if e.Index != last {
 		return fmt.Errorf("%w (got %d want %d)", ErrIndexGap, e.Index, last)
 	}
+	s.ents = append(s.ents, e)
 	return nil
 }
 
@@ -205,6 +238,14 @@ func (s *Storage) SaveReady(r raft.Ready) error {
 		return errors.New("wal: closed")
 	}
 	for _, e := range r.Entries {
+		// Validate contiguity BEFORE any durable write so a rejected gap
+		// entry has zero durable/mutation side effects (no log poisoning).
+		if e.Index != 0 {
+			want := s.snapshot.Metadata.Index + uint64(len(s.ents)) + 1
+			if e.Index != want {
+				return fmt.Errorf("%w (got %d want %d)", ErrIndexGap, e.Index, want)
+			}
+		}
 		b, err := e.Marshal()
 		if err != nil {
 			return err
@@ -345,6 +386,9 @@ func (s *Storage) Snapshot() (raftpb.Snapshot, error) {
 }
 
 // Compact drops entries with index <= compactIndex (post-snapshot GC).
+// Compaction beyond the snapshot index is refused: the snapshot must cover
+// compactIndex first, otherwise the Entries/Term index math (base-relative)
+// would corrupt. Durability comes from the restored snapshot on reopen.
 func (s *Storage) Compact(compactIndex uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -352,14 +396,7 @@ func (s *Storage) Compact(compactIndex uint64) error {
 	if compactIndex <= base {
 		return nil
 	}
-	var keep []raftpb.Entry
-	for _, e := range s.ents {
-		if e.Index > compactIndex {
-			keep = append(keep, e)
-		}
-	}
-	s.ents = keep
-	return nil
+	return fmt.Errorf("wal: compact %d beyond snapshot %d requires snapshot first: %w", compactIndex, base, raft.ErrCompacted)
 }
 
 // Close fdatasyncs and closes the WAL.

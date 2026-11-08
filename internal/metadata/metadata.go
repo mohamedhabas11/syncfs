@@ -8,9 +8,10 @@ package metadata
 
 import (
 	"bytes"
-	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/mohamedhabas11/syncfs/api/v1/gen"
@@ -37,14 +38,15 @@ var (
 
 // Entry is one logical object update inside a command.
 type Entry struct {
-	Kind     int
-	Rev      uint64
-	Size     uint64
-	Mode     uint32
-	UID      uint32
-	GID      uint32
-	Manifest [32]byte // file only
-	Symlink  []byte
+	Kind      int
+	Rev       uint64
+	Size      uint64
+	Mode      uint32
+	UID       uint32
+	GID       uint32
+	Manifest  [32]byte // file only
+	Symlink   []byte
+	LinkCount uint32 // hard-link count; last unlink frees the inode
 }
 
 // Version is the logical clock: raft index + intra-entry revisions.
@@ -163,6 +165,9 @@ func (m *StateMachine) Lookup(parent [16]byte, name string) ([16]byte, bool) {
 	return [16]byte{}, false
 }
 
+// MaxFileBytes caps Truncate growth (quota gate before admission).
+const MaxFileBytes = 32 << 20 // 32 MiB
+
 // Apply executes cmd atomically and retains the op result. On precondition
 // or command failure nothing changes except the REJECTED record.
 func (m *StateMachine) Apply(opID [16]byte, idx uint64, cmd *syncfsapi.Command) error {
@@ -190,7 +195,7 @@ func (m *StateMachine) Apply(opID [16]byte, idx uint64, cmd *syncfsapi.Command) 
 		}
 	}
 	work := m.deepCopy()
-	if err := work.applyKind(cmd); err != nil {
+	if err := work.applyKind(opID, cmd); err != nil {
 		return m.rejectLocked(opID, idx, err)
 	}
 	// commit the clone (splice fields one by one — never copy a held mutex)
@@ -212,10 +217,10 @@ func (m *StateMachine) rejectLocked(opID [16]byte, idx uint64, why error) error 
 	return fmt.Errorf("%w: %s", ErrCommandFailed, why.Error())
 }
 
-func (m *StateMachine) applyKind(cmd *syncfsapi.Command) error {
+func (m *StateMachine) applyKind(opID [16]byte, cmd *syncfsapi.Command) error {
 	switch cmd.Kind {
 	case syncfsapi.CommandKind_CREATE:
-		return m.doCreate(cmd)
+		return m.doCreate(opID, cmd)
 	case syncfsapi.CommandKind_WRITE_RANGES:
 		return m.doWrite(cmd)
 	case syncfsapi.CommandKind_TRUNCATE:
@@ -249,7 +254,7 @@ func oid(b []byte) ([16]byte, error) {
 	return o, nil
 }
 
-func (m *StateMachine) doCreate(cmd *syncfsapi.Command) error {
+func (m *StateMachine) doCreate(opID [16]byte, cmd *syncfsapi.Command) error {
 	p := cmd.GetCreate()
 	parent, err := oid(p.ParentInodeId)
 	if err != nil {
@@ -264,10 +269,18 @@ func (m *StateMachine) doCreate(cmd *syncfsapi.Command) error {
 	if _, dup := m.dentries[parent][p.Name]; dup {
 		return ErrAlreadyExists
 	}
-	newID := [16]byte{}
-	_, _ = rand.Read(newID[:])
-	m.inodes[newID] = &Entry{Kind: KindFile, Mode: 0644, UID: cmd.Role, GID: cmd.Role, Rev: 1}
+	// Deterministic inode ID: replay is a pure function of (opID, parent, name)
+	// so all replicas derive the same ID for the same committed CREATE.
+	h := sha256.New()
+	h.Write(opID[:])
+	h.Write(parent[:])
+	h.Write([]byte(p.Name))
+	sum := h.Sum(nil)
+	var newID [16]byte
+	copy(newID[:], sum[:16])
+	m.inodes[newID] = &Entry{Kind: KindFile, Mode: 0644, UID: 0, GID: 0, Rev: 1, LinkCount: 1}
 	m.dentries[parent][p.Name] = newID
+	m.generations[parent]++
 	return nil
 }
 
@@ -304,7 +317,11 @@ func (m *StateMachine) doTruncate(cmd *syncfsapi.Command) error {
 	if e.Kind != KindFile {
 		return ErrNotFile
 	}
-	e.Size = cmd.GetTruncate().Size
+	size := cmd.GetTruncate().Size
+	if size > MaxFileBytes {
+		return ErrTooLarge
+	}
+	e.Size = size
 	e.Rev++
 	return nil
 }
@@ -326,14 +343,23 @@ func (m *StateMachine) doLink(cmd *syncfsapi.Command) error {
 	if te.Kind == KindDir {
 		return ErrCommandFailed // hard links to dirs are forbidden (POSIX)
 	}
+	if pe, ok := m.inodes[parent]; !ok || pe.Kind != KindDir {
+		return ErrNotDir
+	}
 	if !validName(p.Name) {
 		return ErrTooLarge
 	}
-	if _, dup := m.dentries[parent][p.Name]; dup {
+	kids, ok := m.dentries[parent]
+	if !ok {
+		return ErrNotDir
+	}
+	if _, dup := kids[p.Name]; dup {
 		return ErrAlreadyExists
 	}
-	m.dentries[parent][p.Name] = target
+	kids[p.Name] = target
 	te.Rev++
+	te.LinkCount++
+	m.generations[parent]++
 	return nil
 }
 
@@ -343,15 +369,52 @@ func (m *StateMachine) doUnlink(cmd *syncfsapi.Command) error {
 	if err != nil {
 		return err
 	}
+	if _, ok := m.inodes[parent]; !ok {
+		return ErrNotDir
+	}
 	kids, ok := m.dentries[parent]
 	if !ok {
 		return ErrNotDir
 	}
-	if _, hit := kids[p.Name]; !hit {
+	kid, hit := kids[p.Name]
+	if !hit {
 		return ErrNotFound
 	}
 	delete(kids, p.Name)
 	m.generations[parent]++
+	// Free the inode when its last link is removed (no zombie).
+	if e, ok := m.inodes[kid]; ok {
+		if e.LinkCount > 0 {
+			e.LinkCount--
+		}
+		if e.LinkCount == 0 {
+			// Verify no other dentry still references it (hard-link case).
+			remaining := false
+			for _, mp := range m.dentries {
+				if _, ok := mp[p.Name]; ok && mp[p.Name] == kid {
+					remaining = true
+					break
+				}
+			}
+			if !remaining {
+				// Double-check by full scan (cheap at MVP scale).
+				for _, mp := range m.dentries {
+					for _, id := range mp {
+						if id == kid {
+							remaining = true
+							break
+						}
+					}
+					if remaining {
+						break
+					}
+				}
+			}
+			if !remaining {
+				delete(m.inodes, kid)
+			}
+		}
+	}
 	return nil
 }
 
@@ -365,13 +428,37 @@ func (m *StateMachine) doRename(cmd *syncfsapi.Command) error {
 	if err != nil {
 		return err
 	}
-	kid, hit := m.dentries[srcPar][p.SrcName]
+	if !validName(p.SrcName) || !validName(p.DstName) {
+		return ErrTooLarge
+	}
+	if se, ok := m.inodes[srcPar]; !ok || se.Kind != KindDir {
+		return ErrNotDir
+	}
+	if de, ok := m.inodes[dstPar]; !ok || de.Kind != KindDir {
+		return ErrNotDir
+	}
+	srcKids, ok := m.dentries[srcPar]
+	if !ok {
+		return ErrNotDir
+	}
+	dstKids, ok := m.dentries[dstPar]
+	if !ok {
+		return ErrNotDir
+	}
+	kid, hit := srcKids[p.SrcName]
 	if !hit {
 		return ErrNotFound
 	}
+	// Fail closed on existing dst (no silent overwrite / inode leak).
+	if srcPar == dstPar && p.SrcName == p.DstName {
+		return nil // rename onto itself is a no-op success
+	}
+	if _, hit := dstKids[p.DstName]; hit {
+		return ErrAlreadyExists
+	}
 	// atomic within one command: both parents move together
-	delete(m.dentries[srcPar], p.SrcName)
-	m.dentries[dstPar][p.DstName] = kid
+	delete(srcKids, p.SrcName)
+	dstKids[p.DstName] = kid
 	m.generations[srcPar]++
 	m.generations[dstPar]++
 	return nil
@@ -393,7 +480,26 @@ func (m *StateMachine) doSetAttr(cmd *syncfsapi.Command) error {
 }
 
 func (m *StateMachine) doSetXattr(cmd *syncfsapi.Command) error {
-	return nil // config-level enforcement is M4 work
+	p := cmd.GetSetXattr()
+	if p == nil {
+		return ErrCommandFailed
+	}
+	key := p.Key
+	// Only user.* with a non-empty suffix is supported; bare "user." / "user"
+	// / "" / "x" are rejected (fail closed, no silent commit).
+	if !strings.HasPrefix(key, "user.") || len(key) <= len("user.") {
+		return ErrCommandFailed
+	}
+	id, err := oid(p.InodeId)
+	if err != nil {
+		return err
+	}
+	e, ok := m.inodes[id]
+	if !ok {
+		return ErrNotFound
+	}
+	e.Rev++
+	return nil
 }
 
 func (m *StateMachine) doVolumeConfig(cmd *syncfsapi.Command) error {
@@ -402,7 +508,7 @@ func (m *StateMachine) doVolumeConfig(cmd *syncfsapi.Command) error {
 }
 
 func validName(name string) bool {
-	if name == "" || len(name) > 255 {
+	if name == "" || len(name) > 255 || name == "." || name == ".." {
 		return false
 	}
 	return !bytes.ContainsAny([]byte(name), "/\x00")
