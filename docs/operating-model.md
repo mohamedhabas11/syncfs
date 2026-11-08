@@ -37,6 +37,22 @@ syncfs admin volume apply --file jira-shared-home.yaml
 syncfs mount --volume jira-shared-home --target /srv/jira/shared-home
 ```
 
+```mermaid
+sequenceDiagram
+    actor Admin
+    participant CA as offline cluster CA
+    participant Seed as seed node
+    participant Learner as new learner
+    Admin->>CA: create CA + scoped certs
+    Admin->>Seed: bootstrap cluster (ClusterID)
+    Admin->>Learner: enroll second/third as learners
+    Learner->>Seed: prove identity (mTLS)
+    Seed-->>Learner: verified snapshot + chunk stream
+    Learner->>Learner: verify hashes, apply to committed index, scrub
+    Learner-->>Seed: promotion via membership change (voter)
+    Admin->>Seed: create strict volume (3 healthy voters)
+```
+
 The cluster refuses to create a strict volume until it has three healthy
 storage voters. Configuration that changes shared state, membership, or a
 volume's compatibility contract is proposed through the control plane and

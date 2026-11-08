@@ -101,8 +101,24 @@ window. It never acknowledges a mutation before the quorum condition holds.
 Chunk upload and Raft replication are pipelined on separate QUIC streams, so a
 large transfer does not block metadata or another file's small write.
 
-Uncommitted chunks are harmless garbage: they have no namespace reference and
-are reclaimed only after a conservative epoch-based sweep. A follower may store
+```mermaid
+sequenceDiagram
+    actor App
+    participant Fuse as syncfs mount
+    participant Leader as volume leader
+    participant Majority as storage majority (2/3)
+    App->>Fuse: write/rename/fsync
+    Fuse->>Leader: client assigns stable OpID
+    Leader->>Majority: stage changed ranges as 64KiB COW chunks
+    Majority-->>Leader: durable chunk receipts
+    Leader->>Leader: revoke affected read/directory leases
+    Leader->>Leader: propose preconditioned metadata command to Raft
+    Leader->>Leader: wait Raft majority commit
+    Leader-->>Fuse: apply to metadata state machine
+    Fuse-->>App: success; invalidate remaining cache
+```
+
+Uncommitted chunks are harmless garbage: they have no namespace reference and are reclaimed only after a conservative epoch-based sweep. A follower may store
 a committed log entry before it has all referenced chunks, but it may not apply
 the entry or become leader until it has verified those chunks.
 
@@ -173,6 +189,16 @@ implementation uses Pebble for ordered metadata and chunk indexes, plus
 append-only pack files to avoid the many-small-files penalty of one host file
 per chunk. Its on-disk format is versioned and never shared directly with an
 application.
+
+```mermaid
+flowchart TD
+    Fresh[cache miss / expired lease] --> RI[Raft ReadIndex or lease revalidate]
+    RI -->|lease valid| Hit[serve userspace cache]
+    RI -->|no lease / write conflicts| Leader[leader grants ReadLease]
+    Leader --> Cached[cache + serve]
+    Leader --> Invalidate[conflicting write: invalidate + ack before commit]
+    Drop[control connection lost] --> DropAll[invalidate ALL leases<br/>block instead of stale reads]
+```
 
 ## Failure model
 

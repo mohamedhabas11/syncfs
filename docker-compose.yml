@@ -4,17 +4,24 @@
 # (independent failure domain, like a real deployment — quorum, corruption,
 # and repair tests are meaningless without it).
 # Go module/build caches are shared volumes so iterations stay fast.
+# The base image (Dockerfile) is golang:1.26-alpine + fusermount so M3+
+# FUSE-mount tests can use /dev/fuse (exposed to every node below).
 #
-# Start it:
-#   docker compose run --rm node-a go test ./... -count=1 -race
-#   docker compose exec node-a sh -c 'ls /var/lib/syncfs'
-# FUSE-backed tests (M3+) run here too; they need --privileged — add it
-# when the FUSE milestone lands (not needed for M1/M2 unit work).
+# Build the image:   docker compose build
+# Test a node:       docker compose run --rm node-a go test ./... -count=1 -race
+# FUSE tests:        /dev/fuse routed via devices: + SYS_ADMIN, fusermount present.
+#                    Mount tests need the fusermount binary at runtime (present).
 
 services:
   node-a:
-    image: golang:1.26
+    build:
+      context: .
+      dockerfile: Dockerfile
     working_dir: /src
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
     volumes:
       - .:/src:ro
       - node-a-data:/var/lib/syncfs
@@ -23,8 +30,14 @@ services:
     command: go test ./... -count=1 -race
 
   node-b:
-    image: golang:1.26
+    build:
+      context: .
+      dockerfile: Dockerfile
     working_dir: /src
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
     volumes:
       - .:/src:ro
       - node-b-data:/var/lib/syncfs
@@ -33,8 +46,14 @@ services:
     command: go test ./... -count=1 -race
 
   node-c:
-    image: golang:1.26
+    build:
+      context: .
+      dockerfile: Dockerfile
     working_dir: /src
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
     volumes:
       - .:/src:ro
       - node-c-data:/var/lib/syncfs
