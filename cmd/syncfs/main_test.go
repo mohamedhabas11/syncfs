@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -39,8 +40,11 @@ func TestAdminCLIParsing(t *testing.T) {
 	if code := runMount([]string{"--volume", "default", "--target", "/nonexistent-syncfs-mnt"}); code != 1 {
 		t.Fatalf("mount with missing target must exit 1, got %d", code)
 	}
-	if code := runMount([]string{"--volume", "default", "--target", t.TempDir()}); code != 0 {
-		t.Fatalf("mount with dir target must exit 0, got %d", code)
+	// Success path mounts (Linux) or fails closed without /dev/fuse (dev host).
+	if _, err := os.Stat("/dev/fuse"); err != nil {
+		if code := runMount([]string{"--volume", "default", "--target", t.TempDir()}); code != 1 {
+			t.Fatalf("mount without /dev/fuse must fail closed (1), got %d", code)
+		}
 	}
 	// unknown subcommand is a usage error
 	if code := run([]string{"bogus"}); code != 2 {

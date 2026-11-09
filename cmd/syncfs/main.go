@@ -2,11 +2,20 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"text/template"
+
+	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/mohamedhabas11/syncfs/internal/fusefs"
+	"github.com/mohamedhabas11/syncfs/internal/observability"
 )
 
 const unitTemplate = `[Unit]
@@ -139,12 +148,63 @@ func runDaemon(args []string) int {
 		fmt.Fprintln(os.Stderr, "daemon requires --config")
 		return 2
 	}
-	if _, err := os.Stat(*config); err != nil {
+	data, err := os.ReadFile(*config)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon config not found: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stdout, "syncfs daemon --config %s\n", *config)
+	// Minimal config: {"listen": "127.0.0.1:8080", "quorum": 1}
+	var cfg struct {
+		Listen string `json:"listen"`
+		Quorum int    `json:"quorum"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon config invalid: %v\n", err)
+		return 1
+	}
+	if cfg.Listen == "" {
+		cfg.Listen = "127.0.0.1:8080"
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	c := observability.NewCollector()
+	c.SetFromStats(observability.Stats{LeaderQuorum: cfg.Quorum, CommittedIndex: 0})
+	if err := serveDaemon(ctx, cfg.Listen, c); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
+		return 1
+	}
 	return 0
+}
+
+// serveDaemon starts the metrics/health HTTP server and blocks until ctx ends.
+func serveDaemon(ctx context.Context, listen string, c *observability.Collector) error {
+	srv := &http.Server{Addr: listen, Handler: c.Handler(func() int { return 1 })}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	select {
+	case <-ctx.Done():
+		_ = srv.Close()
+		return ctx.Err()
+	case err := <-errCh:
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	}
+}
+
+func signalContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-ch:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 func runMount(args []string) int {
@@ -163,8 +223,22 @@ func runMount(args []string) int {
 		fmt.Fprintf(os.Stderr, "mount target must be an existing directory: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stdout, "syncfs mount --volume %s --target %s\n", *volume, *target)
+	srv, err := mountOnce(*volume, *target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mount --volume %s --target %s: %v\n", *volume, *target, err)
+		return 1
+	}
+	srv.Wait()
 	return 0
+}
+
+// mountOnce performs the FUSE mount (non-blocking; caller owns the server).
+func mountOnce(volume, target string) (*fuse.Server, error) {
+	if _, err := os.Stat("/dev/fuse"); err != nil {
+		return nil, fmt.Errorf("FUSE device unavailable: %w", err)
+	}
+	h := fusefs.NewStrictHandler(volume)
+	return fusefs.KernelMount(target, h)
 }
 
 // RenderUnit renders a systemd unit for a role/config pair.
