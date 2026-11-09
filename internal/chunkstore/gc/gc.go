@@ -38,6 +38,31 @@ func (r *Reachability) All() map[chunkstore.ChunkID]bool {
 	return out
 }
 
+// ComposeReachability builds the pinned set from the supported pin sources:
+// current manifests, retained snapshots, valid client leases, and in-flight
+// operations. Callers supply each source; GC only collects outside the union.
+func ComposeReachability(manifests, snapshots, leases, inflight []chunkstore.ChunkID) Reachability {
+	r := Reachability{
+		Chunks:      map[chunkstore.ChunkID]bool{},
+		SnapshotIDs: map[chunkstore.ChunkID]bool{},
+		LeasedIDs:   map[chunkstore.ChunkID]bool{},
+		InflightOp:  map[chunkstore.ChunkID]bool{},
+	}
+	for _, id := range manifests {
+		r.Chunks[id] = true
+	}
+	for _, id := range snapshots {
+		r.SnapshotIDs[id] = true
+	}
+	for _, id := range leases {
+		r.LeasedIDs[id] = true
+	}
+	for _, id := range inflight {
+		r.InflightOp[id] = true
+	}
+	return r
+}
+
 // Collector sweeps unreachable chunks between persisted generations.
 type Collector struct {
 	mu      sync.Mutex

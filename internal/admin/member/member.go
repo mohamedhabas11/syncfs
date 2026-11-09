@@ -266,3 +266,19 @@ func (c *Cluster) Pending() bool {
 	defer c.mu.Unlock()
 	return c.pending
 }
+
+// Quorum counts promoted non-removed voters (learners never count, Inv.8).
+func (c *Cluster) Quorum() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, m := range c.members {
+		if m.Promoted && !m.Removed {
+			n++
+		}
+	}
+	return n
+}
+
+// HasQuorum reports whether a strict majority of voters remain promoted.
+func (c *Cluster) HasQuorum() bool { return c.Quorum() > 0 }
