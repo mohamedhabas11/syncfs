@@ -4,15 +4,23 @@
 verify cluster formation, health, restart recovery, and Raft proposal flow —
 **not** production readiness.
 
-## Ready when
+**Status (2026-11-09, `d4566b1`):** READY FOR VM FLEET TEST (daemon-only).
+Full `go test ./...` green in Docker; `bootstrap` generates fleet; daemons
+serve live `/healthz`/`/readyz`/`/metrics` + `POST /raft/propose`; restart
+replays WAL + metadata projection (`internal/daemon` recovery tests).
+Election via QUIC is transport-proven (persistent conns deliver Raft
+messages) but deterministic 3-process leader election needs VM-clock
+verification — see `docs/deploy-vm.md` step 3 (sequential start).
 
-- [ ] `go build ./...`, `go vet ./...`, `go test ./... -race` green (Docker `golang:1.26`)
-- [ ] `scripts/bootstrap-fleet.sh` generates `./fleet` (CA + 3 configs)
-- [ ] Three daemons start with `syncfs daemon --config ./fleet/node-{1,2,3}.json`
-- [ ] `/healthz` 200 on all, `/readyz` 200 on at least one after election (or documented pending with in-memory mesh evidence)
+## Ready when (checklist for VM run)
+
+- [x] `go build ./...`, `go vet ./...`, `go test ./... -race` green (Docker `golang:1.26`)
+- [x] `scripts/bootstrap-fleet.sh` generates `./fleet` (CA + 3 configs)
+- [ ] Three daemons start with `syncfs daemon --config ./fleet/node-{1,2,3}.json` (sequentially, 250ms+ apart)
+- [ ] `/healthz` 200 on all, `/readyz` 200 on at least one after election
 - [ ] `POST /raft/propose` on the leader returns 202 for a small payload; payload replays after daemon restart (WAL + metadata projection recovered)
-- [ ] `syncfs admin status --endpoint <leader>` prints health/ready
-- [ ] `docs/deploy-vm.md` steps reproduce on fresh VMs
+- [x] `syncfs admin status --endpoint <leader>` prints health/ready
+- [ ] `docs/deploy-vm.md` steps reproduce on fresh VMs (record evidence per run)
 
 ## Explicitly not ready
 
