@@ -5,7 +5,14 @@
 These tasks implement a Linux-only FUSE client and three-voter replicated volume
 for strict shared-directory semantics. The task order protects the fundamental
 invariant: metadata cannot commit until referenced content is quorum durable.
-The tracker is this repository; no implementation code exists yet.
+The tracker is this repository; per-milestone truth lives in
+`docs/spec/status.md` (PARTIAL/DONE/DEFERRED) and `docs/known-limitations.md`.
+
+> **Evaluator reconciliation (2026-11-09, see `research/evaluator/RECONCILIATION.md`):**
+> The header previously read “no implementation code exists yet” (stale since
+> M1) and the phase table still listed M2–M4 as blocked. Checkboxes below are
+> now aligned with `docs/spec/status.md`: M2-05, M3-02, M4-01..M4-04 are
+> PARTIAL (unchecked), not DONE.
 
 ## Tracker
 
@@ -16,11 +23,11 @@ The tracker is this repository; no implementation code exists yet.
 | Phase | Status | Blocking Dependencies | Parallelizable | Verification |
 | --- | --- | --- | --- | --- |
 | Foundation | done | None | No | Documentation review and git diff --check |
-| M1: Repository and protocol baseline | ready | Go 1.25+ on Linux | Limited | go test ./... |
-| M2: Durable replicated core | blocked | M1 | Limited | Three-node deterministic integration test |
-| M3: FUSE strict mount | blocked | M2 | No | Linux FUSE compatibility suite |
-| M4: HA, joining, operations | blocked | M2 and M3 | Limited | Fault, learner, and recovery tests |
-| M5: Qualification | blocked | M4 plus target workload | No | Benchmark and application HA evidence |
+| M1: Repository and protocol baseline | done | Go 1.25+ on Linux | Limited | go test ./... |
+| M2: Durable replicated core | partial (M2-05 pending durable FUSE wiring) | M1 | Limited | Three-node deterministic integration test |
+| M3: FUSE strict mount | partial (M3-02 flat-root; kernel depth pending) | M2 | No | Linux FUSE compatibility suite |
+| M4: HA, joining, operations | partial (snapshot/GC, membership, CLI honesty, fault Docker) | M2 and M3 | Limited | Fault, learner, and recovery tests |
+| M5: Qualification | deferred (ADR-0001, needs reference hardware) | M4 plus target workload | No | Benchmark and application HA evidence |
 
 ## Agent Lanes
 
@@ -118,10 +125,10 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/raftstore/...` green in the container fleet: three-node election + commit in-memory mesh.
 
-- [x] **M2-05 — Implement quorum write coordinator**: Perform chunk preparation
+- [ ] **M2-05 — Implement quorum write coordinator** (PARTIAL per `docs/spec/status.md`): Perform chunk preparation
   to a majority, build preconditioned commands, propose once, retain operation
   results, and prove retries cannot double-apply a mutation.
-  - **Phase**: M2 / done (2026-11-08).
+  - **Phase**: M2 / PARTIAL (2026-11-08; see `docs/spec/status.md` M2-05).
   - **Files**: internal/volume/write.go, internal/client/operations.go,
     internal/volume/*_test.go.
   - **Tracker**: This repository.
@@ -151,11 +158,11 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -run TestFUSE ./internal/fusefs/...` green in the container fleet (kernel-mount smoke, strict posture, errno table).
 
-- [x] **M3-02 — Complete the compatibility profile**: Implemented and tested
+- [ ] **M3-02 — Complete the compatibility profile** (PARTIAL per `docs/spec/status.md`): Implemented and tested
   create/open/read/write/truncate/append, directories, hard/symlinks, rename,
   fsync, fsyncdir, uid/gid/mode, and lock forwarding. Explicit errors returned
   for excluded operations (carried in docs/posix-compat.md matrix).
-  - **Phase**: M3 / done (2026-11-08).
+  - **Phase**: M3 / PARTIAL (2026-11-08; in-memory Handler surface only; kernel nested traversal pending #15).
   - **Files**: internal/fusefs/* (posix.go), docs/posix-compat.md.
   - **Tracker**: This repository.
   - **Dependencies**: M3-01 (done).
@@ -173,10 +180,10 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test -race ./internal/client/...` green in the container fleet (journal record/lookup, drop→invalidate-all+abort, reconnect query).
 
-- [x] **M4-01 — Add verified snapshots, repair, and garbage collection**:
+- [ ] **M4-01 — Add verified snapshots, repair, and garbage collection** (PARTIAL per `docs/spec/status.md`):
   snapshot manifests, resumable transfer, learner chunk catch-up, scrub,
   repair, and conservative mark-and-sweep GC.
-  - **Phase**: M4 / done (2026-11-08).
+  - **Phase**: M4 / PARTIAL (2026-11-08; caller composition + resumable transfer pending).
   - **Files**: internal/raftstore/snapshot/*, internal/chunkstore/gc/*,
     internal/volume/repair/* (sweep+pinning surface).
   - **Tracker**: This repository.
@@ -184,10 +191,10 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: Yes, Storage lane.
   - **Verification**: `go test -race ./internal/chunkstore/gc/...` green in the container fleet (epoch sweep, pinning survival, current-epoch safety).
 
-- [x] **M4-02 — Add safe enrollment and membership replacement**: Implement
+- [ ] **M4-02 — Add safe enrollment and membership replacement** (PARTIAL per `docs/spec/status.md`): Implement
   preauthorization, one-time enrollment bundles, learner state, catch-up gates,
   joint-consensus promotion, draining, and removal refusal checks.
-  - **Phase**: M4 / done (2026-11-08).
+  - **Phase**: M4 / PARTIAL (2026-11-08; ConfState driver still convention).
   - **Files**: internal/auth/enrollment/*, internal/admin/member/*,
     internal/raftstore/membership/* (conf-change wiring).
   - **Tracker**: This repository.
@@ -195,10 +202,10 @@ edit shared schemas or generated code concurrently.
   - **Parallel**: No.
   - **Verification**: `go test ./internal/admin/member/... -race` green in the container fleet (learner gate, one-change-at-a-time, quorum-safe removal).
 
-- [x] **M4-03 — Add admin CLI, systemd artifacts, and observability**: Build
+- [ ] **M4-03 — Add admin CLI, systemd artifacts, and observability** (PARTIAL per `docs/spec/status.md`): Build
   bootstrap/status/volume/member commands, structured audit logs, metrics,
   health endpoints, systemd units, and recovery runbooks.
-  - **Phase**: M4 / done (2026-11-08).
+  - **Phase**: M4 / PARTIAL (2026-11-08; admin commands are validate-and-print stubs; daemon wiring is M5).
   - **Files**: cmd/syncfs/*, internal/admin/*, internal/observability/* (metrics
     stubs documented), deploy/systemd/*, docs/reference/cli.md.
   - **Tracker**: This repository.
@@ -207,10 +214,10 @@ edit shared schemas or generated code concurrently.
   - **Verification**: `go test ./cmd/...` green in the container fleet (unit
     rendering); CLI behavior stubs documented in docs/reference/cli.md.
 
-- [x] **M4-04 — Build the fault-injection cluster harness**: Create a Linux
+- [ ] **M4-04 — Build the fault-injection cluster harness** (PARTIAL per `docs/spec/status.md`): Create a Linux
   three-node test harness capable of process kill, pause, network partition,
   packet delay/duplication, disk-full, corrupted pack, and FUSE-client restart.
-  - **Phase**: M4 / done (2026-11-08).
+  - **Phase**: M4 / PARTIAL (2026-11-08; Docker realization deferred to M5).
   - **Files**: internal/testkit/cluster/* (mesh), internal/testkit/fault/*,
     test/integration/*, test/fault/* (harness surface; docker realization is M5).
   - **Tracker**: This repository.
@@ -260,7 +267,7 @@ edit shared schemas or generated code concurrently.
   membership, operations, compatibility, and task-level verification (evidence-linked, research/00–07).
 - [x] Run git diff --check after document edits.
 - [x] Run Markdown link audit after document edits.
-- [ ] Run Go tests after M1-01 creates the module and toolchain baseline (blocked; local Go 1.15.6 < Go 1.26 baseline).
+- [x] Run Go tests after M1-01 creates the module and toolchain baseline (fleet: `go test ./...` / `-race` green on Go 1.26; dev host Go 1.15.6 cannot parse `go 1.26.0` — run in container/CI).
 
 ## Handoff Notes
 

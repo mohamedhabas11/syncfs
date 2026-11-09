@@ -8,6 +8,22 @@ Type=simple
 ExecStart=/usr/bin/syncfs mount --volume jira-shared-home --target /srv/jira/shared-home
 Restart=on-failure
 RestartSec=2
+# The mount process owns the FUSE connection and needs /dev/fuse; the daemon
+# unit does not. The application unit must start only after this mount is
+# healthy (ordering enforced by Wants/After on the application side).
+User=syncfs
+Group=syncfs
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+# FUSE requires /dev/fuse; PrivateDevices must stay false so the device
+# remains visible to the mount process.
+PrivateDevices=false
+ReadWritePaths=/srv/jira/shared-home
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

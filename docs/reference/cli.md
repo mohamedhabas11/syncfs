@@ -4,10 +4,11 @@ Generated from `cmd/syncfs/main.go`. Run `syncfs --help`-style usage via:
 `syncfs admin <subcommand> --help` (flag package prints usage). Generator
 command: none (hand-written reference kept in sync by `TestAdminCLIParsing`).
 
-All commands below are **stubs**: they validate flags/files/dirs and print
+Admin commands are **stubs**: they validate flags/files/dirs and print
 the control-plane action that *would* run. They never contact a daemon,
-propose to Raft, write a config file, or mount. There is no
-`syncfs admin pki` subcommand.
+propose to Raft, or write a config file. There is no
+`syncfs admin pki` subcommand. `daemon` and `mount` are no longer print-only
+but are not storage services either (see below).
 
 ## Admin
 
@@ -22,11 +23,10 @@ propose to Raft, write a config file, or mount. There is no
 
 | Command | Args | Behavior |
 | --- | --- | --- |
-| `syncfs daemon` | `--config <path>` | STUB: requires an existing config file (else exit 1) and prints `syncfs daemon --config <path>`; does not start any daemon. Units: `deploy/systemd/syncfs-daemon.service`. |
-| `syncfs mount` | `--volume <name> --target <dir>` | STUB: requires an existing directory target (else exit 1) and prints `syncfs mount --volume <name> --target <dir>`; does not mount. Units: `deploy/systemd/syncfs-mount.service`. |
+| `syncfs daemon` | `--config <path>` | METRICS/HEALTH ONLY: reads `{"listen": "...", "quorum": N}` with `quorum >= 2` (else exit 1), serves `/metrics` + `/healthz` on `listen` until SIGINT/SIGTERM. No Raft, WAL, chunk, or QUIC storage endpoints yet (pending T02). Units: `deploy/systemd/syncfs-daemon.service`. |
+| `syncfs mount` | `--volume <name> --target <dir>` | FUSE SHELL ONLY: requires an existing directory target (else exit 1) and `/dev/fuse` (else exit 1, fail-closed), then calls `fusefs.KernelMount` with `NewStrictHandler` (no coordinator wired — writes return EIO). No volume/coordinator/QUIC path yet (pending T03). Units: `deploy/systemd/syncfs-mount.service`. |
 
-Exit codes: 0 success (after validation/print), 1 missing file/dir, 2
-usage error. The CLI validates and describes; Raft proposals are applied
-by the control plane (see `docs/operating-model.md`).
-
-Reference docs: `docs/architecture/index.md`, `docs/failure-semantics.md`.
+Exit codes: 0 success (after validation/print or serve-until-signal), 1 missing
+file/dir/config invalid/no FUSE device, 2 usage error. The CLI validates and
+describes; Raft proposals are applied by the control plane (see
+`docs/operating-model.md`).

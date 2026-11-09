@@ -39,10 +39,16 @@ func (c StreamClass) Urgency() int8 {
 }
 
 // OpenClassifiedStream opens a stream and applies the class priority.
-// Callers MUST validate their own principal for the class via
-// ValidatePrincipalForClass before opening (opener role enforcement); the
-// peer's cluster identity is already enforced by VerifyConnection.
-func OpenClassifiedStream(conn *quic.Conn, class StreamClass) (*quic.Stream, error) {
+// It enforces the opener's role inside the API: self is the local endpoint's
+// verified identity (from its own leaf certificate) and must be allowed for
+// class, or no stream is opened. The peer's cluster identity is enforced by
+// VerifyConnection at connection setup, and re-checked per-stream on accept
+// via AcceptClassifiedStream. Callers must not open streams on behalf of an
+// identity they do not hold.
+func OpenClassifiedStream(conn *quic.Conn, self auth.Identity, class StreamClass) (*quic.Stream, error) {
+	if err := ValidatePrincipalForClass(self, class); err != nil {
+		return nil, err
+	}
 	st, err := conn.OpenStream()
 	if err != nil {
 		return nil, err

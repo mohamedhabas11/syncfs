@@ -2,8 +2,9 @@
 
 Date: 2026-11-08
 Tracker repo: /Users/mohamed/syncfs
-Current baseline: M1–M4 implemented (see `docs/spec/status.md`);
-M5 deferred under ADR-0001.
+Current baseline: M1 done; M2–M4 partial (see `docs/spec/status.md`);
+M5 deferred under ADR-0001. (Evaluator reconciliation 2026-11-09: the prior
+“M1–M4 implemented” line overstated M2-05, M3-02, M4-01..04, which are PARTIAL.)
 
 ## Purpose
 
@@ -16,9 +17,9 @@ raises a measurable correctness threshold before adding scope.
 | Order | Milestone | Status | Verification |
 | --- | --- | --- | --- |
 | 0 | Architecture foundation | Done | Documentation audit |
-| 1 | Strict replicated core | DONE (M1+M2) | Three-node mesh + unit suites |
-| 2 | Linux shared mount | DONE (M3) | FUSE mount + compat surface |
-| 3 | HA operations and joining | DONE (M4) | GC/membership/CLI/fault suites |
+| 1 | Strict replicated core | PARTIAL (M1 done; M2-05 partial) | Three-node mesh + unit suites |
+| 2 | Linux shared mount | PARTIAL (M3-02 flat-root) | FUSE mount + compat surface |
+| 3 | HA operations and joining | PARTIAL (M4-01..04) | GC/membership/CLI/fault suites |
 | 4 | Workload qualification | DEFERRED (ADR-0001) | needs reference hardware |
 | 5 | Selective expansion | Later | ADR + milestone tests |
 

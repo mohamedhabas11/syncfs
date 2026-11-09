@@ -24,7 +24,7 @@ requirement, not an implementation detail.
 
 ## Status
 
-Pre-1.0, not production ready. Foundation (M1–M4) is implemented and green
+Pre-1.0, not production ready. Foundation: M1 done; M2–M4 partial and green
 (`go build ./...`, `go vet ./...`, `go test -race ./...` — 18 packages);
 qualification (M5) is deferred pending reference hardware (ADR-0001).
 Per-milestone state with evidence: [`docs/spec/status.md`](docs/spec/status.md).
@@ -33,6 +33,7 @@ The durable engineering record sits in [`.spec/`](.spec/):
 
 | Document | Purpose |
 | --- | --- |
+| [`.spec/product-contract.md`](.spec/product-contract.md) | Authoritative product + deployment-profile lock (T00) |
 | [`.spec/technical_spec.md`](.spec/technical_spec.md) | Normative MVP contract, storage layout, protocol, failure model, and package boundaries. |
 | [`.spec/tasks.md`](.spec/tasks.md) | Atomic implementation tasks and verification gates (current tick state). |
 | [`.spec/roadmap.md`](.spec/roadmap.md) | Milestones beyond the first usable cluster. |

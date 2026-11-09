@@ -65,6 +65,9 @@ func TestCallerCredentialsEnforcedInLookup(t *testing.T) {
 type failingSyncer struct{ err error }
 
 func (f *failingSyncer) OnWrite(name string, at int64, data []byte) error { return f.err }
+func (f *failingSyncer) OnTruncate(name string, size uint64) error        { return f.err }
+func (f *failingSyncer) OnFsync(name string) error                        { return f.err }
+func (f *failingSyncer) OnFsyncDir(name string) error                     { return f.err }
 
 // TestWriteFileFailsClosedOnSyncerError verifies writes are rolled back and
 // EIO returned when the coordinator seam fails (fail closed).

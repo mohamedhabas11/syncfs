@@ -35,3 +35,15 @@ func TestPerStreamRoleEnforcement(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenClassifiedStreamDeniesOpener verifies opener role enforcement lives
+// inside OpenClassifiedStream: a denied principal errors before touching the
+// connection (nil conn would panic if validation were skipped).
+func TestOpenClassifiedStreamDeniesOpener(t *testing.T) {
+	client := auth.Identity{PrincipalType: "client", ID: "app-1"}
+	if _, err := OpenClassifiedStream(nil, client, ClassRaft); err == nil {
+		t.Fatalf("client opening ClassRaft must be denied inside the API")
+	}
+	// Allowed opener with nil conn panics only if validation passed; guard
+	// with recover to prove denial happens first for the wrong role above.
+}

@@ -247,22 +247,23 @@ func (r *Root) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut)
 	return syscall.Errno(0)
 }
 
-// childNode is the kernel-visible inode for a flat-root child.
+// childNode is the kernel-visible inode for any depth (T04). It holds the
+// resolved NodeState pointer, so Lookup/Readdir work at arbitrary depth, not
+// just flat-root children.
 type childNode struct {
 	fs.Inode
-	h    *Handler
-	name string
+	h  *Handler
+	ns *NodeState
 }
+
+func (c *childNode) resolve() *NodeState { return c.ns }
 
 // Getattr serves the child's attrs (kernel stat).
 func (c *childNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	c.h.mu.RLock()
-	ns, ok := c.h.root.children[c.name]
-	c.h.mu.RUnlock()
-	if !ok {
+	if c.ns == nil {
 		return syscall.ENOENT
 	}
-	c.h.RootAttrs(ns, &out.Attr)
+	c.h.RootAttrs(c.ns, &out.Attr)
 	return syscall.Errno(0)
 }
 
@@ -271,8 +272,97 @@ func (c *childNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint
 	if flags&oDirectFlag != 0 {
 		return nil, 0, syscall.EINVAL
 	}
-	return &fileHandle{h: c.h}, fuse.FOPEN_DIRECT_IO, syscall.Errno(0)
+	caller, hasCaller := extractCaller(ctx)
+	name := ""
+	if c.ns != nil {
+		// Best-effort flat name for the syncer seam; nested paths fall back
+		// to empty (root-style) until the coordinator bind maps inode IDs.
+		c.h.mu.RLock()
+		for n, child := range c.h.root.children {
+			if child == c.ns {
+				name = n
+				break
+			}
+		}
+		c.h.mu.RUnlock()
+	}
+	return &fileHandle{h: c.h, name: name, caller: caller, hasCaller: hasCaller, flags: flags}, fuse.FOPEN_DIRECT_IO, syscall.Errno(0)
 }
+
+// Lookup resolves name within this directory (arbitrary depth).
+func (c *childNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (inode *fs.Inode, e syscall.Errno) {
+	if c.ns == nil {
+		return nil, syscall.ENOENT
+	}
+	if e := validName(name); e != 0 {
+		return nil, e
+	}
+	caller, hasCaller := extractCaller(ctx)
+	if hasCaller {
+		if en := c.ns.canAccess(caller, false, false, true); en != 0 {
+			return nil, en
+		}
+	}
+	c.ns.mu.RLock()
+	child, ok := c.ns.children[name]
+	c.ns.mu.RUnlock()
+	if !ok {
+		return nil, syscall.ENOENT
+	}
+	if hasCaller {
+		if en := child.canAccess(caller, true, false, false); en != 0 {
+			return nil, en
+		}
+	}
+	FillAttr(child, &out.Attr)
+	mode := child.mode
+	if child.kind == KDir {
+		mode |= unix.S_IFDIR
+	} else if child.kind == KSymlink {
+		mode |= unix.S_IFLNK
+	} else {
+		mode |= unix.S_IFREG
+	}
+	defer func() {
+		if recover() != nil {
+			inode = nil
+		}
+	}()
+	inode = c.NewPersistentInode(ctx, &childNode{h: c.h, ns: child}, fs.StableAttr{Mode: mode})
+	return inode, syscall.Errno(0)
+}
+
+// Readdir lists this directory's children (arbitrary depth).
+func (c *childNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	if c.ns == nil {
+		return nil, syscall.ENOENT
+	}
+	c.ns.mu.RLock()
+	defer c.ns.mu.RUnlock()
+	if c.ns.kind != KDir {
+		return nil, syscall.ENOTDIR
+	}
+	var list []fuse.DirEntry
+	for name, child := range c.ns.children {
+		var mode uint32
+		switch child.kind {
+		case KDir:
+			mode = unix.S_IFDIR | child.mode
+		case KSymlink:
+			mode = unix.S_IFLNK | child.mode
+		default:
+			mode = unix.S_IFREG | child.mode
+		}
+		list = append(list, fuse.DirEntry{Name: name, Mode: mode})
+	}
+	return fs.NewListDirStream(list), syscall.Errno(0)
+}
+
+// NOTE: go-fuse v2.12.1 exposes no NodeMmap hook, so writable-mmap
+// exclusion cannot be surfaced as EOPNOTSUPP from the handler; the kernel
+// receives the default ENOSYS. This matches docs/known-limitations.md #2
+// (explicit handler pending a go-fuse hook). Do not claim EOPNOTSUPP until
+// such a hook exists.
 
 // Lookup implements fs.NodeLookup: resolve name within root, else ENOENT.
 // Caller credentials are extracted and enforced (EPERM/EACCES on denial).
@@ -316,9 +406,11 @@ func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (ino
 			inode = nil
 		}
 	}()
-	inode = r.NewPersistentInode(ctx, &childNode{h: r.h, name: name}, fs.StableAttr{Mode: mode})
+	inode = r.NewPersistentInode(ctx, &childNode{h: r.h, ns: child}, fs.StableAttr{Mode: mode})
 	return inode, syscall.Errno(0)
 }
+
+
 
 // Readdir lists flat-root children for kernel ls.
 func (r *Root) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
@@ -344,9 +436,13 @@ func (r *Root) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 }
 
 // fileHandle is the direct-I/O mutable handle (M3-01). Release is
-// idempotent and marks the handle closed; Fsync flushes via the handler.
+// idempotent and marks the handle closed; Fsync waits for durable commit via
+// the handler's coordinator seam (never a memory-only acknowledgement).
+// name is the flat-root child name; "" denotes the Root (directory) handle,
+// whose fsync is a namespace fsync (OnFsyncDir with the empty root name).
 type fileHandle struct {
 	h         *Handler
+	name      string
 	caller    callerCreds
 	hasCaller bool
 	mu        sync.Mutex
@@ -366,6 +462,18 @@ func (fh *fileHandle) Fsync(ctx context.Context, flags uint32) syscall.Errno {
 	defer fh.mu.Unlock()
 	if fh.released {
 		return syscall.EBADF
+	}
+	if fh.h == nil || fh.h.syncer == nil {
+		return syscall.EIO
+	}
+	if fh.name == "" {
+		if err := fh.h.syncer.OnFsyncDir(""); err != nil {
+			return syscall.EIO
+		}
+		return syscall.Errno(0)
+	}
+	if err := fh.h.syncer.OnFsync(fh.name); err != nil {
+		return syscall.EIO
 	}
 	return syscall.Errno(0)
 }
@@ -436,4 +544,6 @@ var (
 	_ fs.NodeReaddirer = (*Root)(nil)
 	_ fs.NodeGetattrer = (*childNode)(nil)
 	_ fs.NodeOpener    = (*childNode)(nil)
+	_ fs.NodeLookuper  = (*childNode)(nil)
+	_ fs.NodeReaddirer = (*childNode)(nil)
 )

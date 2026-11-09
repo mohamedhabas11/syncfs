@@ -99,7 +99,7 @@ func TestRoundTripHelloOverQUIC(t *testing.T) {
 	defer cancel()
 	defer conn.CloseWithError(0, "done")
 
-	st, err := OpenClassifiedStream(conn, ClassClient)
+	st, err := OpenClassifiedStream(conn, auth.Identity{ClusterID: "cl-1", PrincipalType: "client", ID: "app-1"}, ClassClient)
 	if err != nil {
 		t.Fatal(err)
 	}

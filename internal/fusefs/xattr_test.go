@@ -11,6 +11,9 @@ func (f *fakeSyncer) OnWrite(name string, at int64, data []byte) error {
 	f.writes++
 	return nil
 }
+func (f *fakeSyncer) OnTruncate(name string, size uint64) error { return nil }
+func (f *fakeSyncer) OnFsync(name string) error                 { return nil }
+func (f *fakeSyncer) OnFsyncDir(name string) error              { return nil }
 
 func TestXattrUserNamespaceOnly(t *testing.T) {
 	h := NewHandler("xattr")
@@ -45,7 +48,9 @@ func TestSyncerSeamIsCalled(t *testing.T) {
 	if f.writes != 1 {
 		t.Fatalf("syncer must be called once, got %d", f.writes)
 	}
-	// nil resets to noop without panic
+	// nil is kept as nil (fail-closed), NOT reset to NoopSyncer.
 	h.SetSyncer(nil)
-	_, _ = h.WriteFile("g", 0, []byte("z"))
+	if _, e := h.WriteFile("g", 0, []byte("z")); e != syscall.EIO {
+		t.Fatalf("nil syncer must fail closed with EIO, got %v", e)
+	}
 }

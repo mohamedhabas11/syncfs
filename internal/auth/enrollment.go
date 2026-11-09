@@ -23,10 +23,21 @@ type EnrollmentRecord struct {
 }
 
 // EnrollmentStore abstracts the committed-state record (M4-02 wires Raft).
+// Stores SHOULD implement AtomicEnrollmentStore so Consume is a single atomic
+// check-and-burn; the Get+MarkConsumed fallback is best-effort and remains
+// vulnerable to a TOCTOU race in the window between the two calls.
 type EnrollmentStore interface {
 	Put(rec EnrollmentRecord) error
 	Get(nodeID string) (EnrollmentRecord, bool)
 	MarkConsumed(nodeID string, at time.Time) error
+}
+
+// AtomicEnrollmentStore is a store that can consume an enrollment atomically:
+// validity checks (existence, expiry, consumed, proof match) and the
+// consumed-mark happen as one indivisible step, so concurrent uses of one
+// bundle produce exactly one success. MemoryStore implements it.
+type AtomicEnrollmentStore interface {
+	TryConsume(nodeID, fingerprint, nonce string, now time.Time) error
 }
 
 // MemoryStore is the M1-03 in-memory implementation (tests + unit work).
@@ -75,15 +86,48 @@ func (s *MemoryStore) MarkConsumed(nodeID string, at time.Time) error {
 	return nil
 }
 
+// TryConsume validates and burns a one-time record atomically: the whole
+// check-and-mark sequence runs under one lock acquisition, so racing
+// concurrent uses produce exactly one success.
+func (s *MemoryStore) TryConsume(nodeID, fingerprint, nonce string, now time.Time) error {
+	if nodeID == "" || fingerprint == "" || nonce == "" {
+		return errors.New("auth: enrollment proof must be non-empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.recs[nodeID]
+	if !ok {
+		return fmt.Errorf("auth: enrollment unknown node %q", nodeID)
+	}
+	if !rec.ConsumedAt.IsZero() {
+		return errors.New("auth: enrollment already consumed")
+	}
+	if now.After(rec.ExpiresAt) {
+		return errors.New("auth: enrollment expired")
+	}
+	if !equalStrings(rec.CertFingerprint, fingerprint) || !equalStrings(rec.Nonce, nonce) {
+		return errors.New("auth: enrollment proof mismatch")
+	}
+	rec.ConsumedAt = now
+	s.recs[nodeID] = rec
+	return nil
+}
+
 // Fingerprint is the hex SHA-256 of a DER cert.
 func Fingerprint(der []byte) string {
 	h := sha256.Sum256(der)
 	return hex.EncodeToString(h[:])
 }
 
-// Consume validates and atomically burns a one-time record.
+// Consume validates and burns a one-time record.
 // Errors: unknown node, expired, already consumed, fingerprint/nonce mismatch.
+// Atomic stores (MemoryStore) consume under one lock; generic stores fall
+// back to Get-then-Mark, which is NOT atomic across the window and must not
+// be used for production enrollment — implement AtomicEnrollmentStore.
 func Consume(store EnrollmentStore, nodeID, fingerprint, nonce string, now time.Time) error {
+	if as, ok := store.(AtomicEnrollmentStore); ok {
+		return as.TryConsume(nodeID, fingerprint, nonce, now)
+	}
 	if nodeID == "" || fingerprint == "" || nonce == "" {
 		return errors.New("auth: enrollment proof must be non-empty")
 	}

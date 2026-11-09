@@ -13,7 +13,11 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/mohamedhabas11/syncfs/internal/auth"
 )
+
+var defaultRedact = auth.NewRedactor().Redact
 
 // Record is one audit entry.
 type Record struct {
@@ -33,13 +37,24 @@ type Sink struct {
 	redactor func(string) string // optional; locks cycle
 }
 
-// NewSink builds an empty sink.
-func NewSink() *Sink { return &Sink{} }
+// NewSink builds an empty sink with secret redaction enabled.
+func NewSink() *Sink { return &Sink{redactor: defaultRedact} }
+
+// SetRedactor overrides the redaction function (tests).
+func (s *Sink) SetRedactor(f func(string) string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.redactor = f
+}
 
 // Record appends a record, sealing it with the previous record's hash.
+// Detail is redacted before storage so secrets never enter the chain.
 func (s *Sink) Record(actor, action, target, detail string) Record {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.redactor != nil {
+		detail = s.redactor(detail)
+	}
 	prev := ""
 	if len(s.recs) > 0 {
 		prev = hash(s.recs[len(s.recs)-1])

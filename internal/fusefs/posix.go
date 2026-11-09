@@ -103,6 +103,9 @@ func (h *Handler) WriteFile(name string, at int64, data []byte) (uint32, syscall
 }
 
 // Truncate sets the file size (zero-fill or extend with zeros).
+// Fail-closed: a nil syncer or a coordinator error rolls the size back and
+// returns EIO (never a false durable receipt). Durability comes from the
+// coordinator seam, not from local memory state.
 func (h *Handler) Truncate(name string, size uint64) syscall.Errno {
 	h.mu.RLock()
 	ns, ok := h.root.children[name]
@@ -118,16 +121,31 @@ func (h *Handler) Truncate(name string, size uint64) syscall.Errno {
 	if size > MaxFileBytes {
 		return syscall.EFBIG
 	}
+	prevData := append([]byte(nil), ns.data...)
+	prevMtime := ns.mtime
 	if size < uint64(len(ns.data)) {
 		ns.data = ns.data[:size]
 	} else {
 		ns.data = append(ns.data, make([]byte, size-uint64(len(ns.data)))...)
 	}
 	ns.mtime = time.Now()
+	if h.syncer == nil {
+		// Strict handler with no coordinator wired: fail closed (Inv.10).
+		ns.data = prevData
+		ns.mtime = prevMtime
+		return syscall.EIO
+	}
+	if err := h.syncer.OnTruncate(name, size); err != nil {
+		ns.data = prevData
+		ns.mtime = prevMtime
+		return syscall.EIO
+	}
 	return syscall.Errno(0)
 }
 
-// Fsync marks data durable (no-op stub; durability comes from coordinator).
+// Fsync waits for durable commit via the coordinator seam. A nil syncer or a
+// coordinator error returns EIO; success is returned only after OnFsync
+// reports the quorum durability condition met.
 func (h *Handler) Fsync(name string) syscall.Errno {
 	h.mu.RLock()
 	ns, ok := h.root.children[name]
@@ -137,6 +155,12 @@ func (h *Handler) Fsync(name string) syscall.Errno {
 	}
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
+	if h.syncer == nil {
+		return syscall.EIO
+	}
+	if err := h.syncer.OnFsync(name); err != nil {
+		return syscall.EIO
+	}
 	ns.mtime = time.Now()
 	return syscall.Errno(0)
 }
@@ -241,8 +265,9 @@ func (h *Handler) Readlink(name string) (string, syscall.Errno) {
 	return ns.link, syscall.Errno(0)
 }
 
-// FsyncDir marks a directory durable (coordinator seam for M5). Not-found
-// returns ENOENT; files return ENOTDIR.
+// FsyncDir waits for namespace-command durability via the coordinator seam.
+// Not-found returns ENOENT; files return ENOTDIR; a nil syncer or a
+// coordinator error returns EIO.
 func (h *Handler) FsyncDir(name string) syscall.Errno {
 	h.mu.RLock()
 	ns, ok := h.root.children[name]
@@ -255,6 +280,12 @@ func (h *Handler) FsyncDir(name string) syscall.Errno {
 	}
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
+	if h.syncer == nil {
+		return syscall.EIO
+	}
+	if err := h.syncer.OnFsyncDir(name); err != nil {
+		return syscall.EIO
+	}
 	ns.mtime = time.Now()
 	return syscall.Errno(0)
 }

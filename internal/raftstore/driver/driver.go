@@ -314,6 +314,47 @@ func (d *Driver) checkChunkGaps() error {
 	return d.ChunkGap()
 }
 
+// ProposeConfChange proposes a joint-consensus membership change (T07).
+// Applied entries of type EntryConfChange/EntryConfChangeV2 must be passed
+// to ApplyConfChange on every replica (daemon apply loop).
+func (d *Driver) ProposeConfChange(ctx context.Context, cc raftpb.ConfChange) error {
+	if err := d.checkChunkGaps(); err != nil {
+		return fmt.Errorf("driver: conf change refused (chunk gap): %w", err)
+	}
+	return d.node.ProposeConfChange(ctx, cc)
+}
+
+// ProposeConfChangeV2 proposes a ConfChangeV2 (joint promotion).
+func (d *Driver) ProposeConfChangeV2(ctx context.Context, cc raftpb.ConfChangeV2) error {
+	if err := d.checkChunkGaps(); err != nil {
+		return fmt.Errorf("driver: conf change refused (chunk gap): %w", err)
+	}
+	return d.node.ProposeConfChange(ctx, cc)
+}
+
+// ApplyConfChange applies a committed ConfChange entry and updates the
+// local Raft config. Returns error if the entry is not a conf change.
+func (d *Driver) ApplyConfChange(e raftpb.Entry) error {
+	switch e.Type {
+	case raftpb.EntryConfChange:
+		var cc raftpb.ConfChange
+		if err := cc.Unmarshal(e.Data); err != nil {
+			return fmt.Errorf("driver: unmarshal ConfChange: %w", err)
+		}
+		d.node.ApplyConfChange(cc)
+		return nil
+	case raftpb.EntryConfChangeV2:
+		var v2 raftpb.ConfChangeV2
+		if err := v2.Unmarshal(e.Data); err != nil {
+			return fmt.Errorf("driver: unmarshal ConfChangeV2: %w", err)
+		}
+		d.node.ApplyConfChange(v2)
+		return nil
+	default:
+		return fmt.Errorf("driver: entry %d type %v is not a conf change", e.Index, e.Type)
+	}
+}
+
 // ReadIndex requests a linearizable read marker.
 func (d *Driver) ReadIndex(ctx context.Context) error {
 	return d.node.ReadIndex(ctx, nil)

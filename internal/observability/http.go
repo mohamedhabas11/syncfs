@@ -3,8 +3,10 @@ package observability
 import "net/http"
 
 // Handler returns an http.Handler serving Prometheus exposition at
-// /metrics and readiness at /healthz. Health is 200 when quorum > 0,
-// 503 otherwise (caller maps Stats.LeaderQuorum via quorumFn).
+// /metrics, liveness at /healthz (200 while the process serves), and
+// readiness at /readyz (200 only when quorumFn() > 0, i.e. a live leader
+// with quorum; 503 otherwise). Liveness must never be derived from
+// configured quorum; readiness must never hide quorum loss.
 func (c *Collector) Handler(quorumFn func() int) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
@@ -12,9 +14,13 @@ func (c *Collector) Handler(quorumFn func() int) http.Handler {
 		_, _ = w.Write([]byte(c.Prometheus()))
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if quorumFn == nil || quorumFn() > 0 {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
+			_, _ = w.Write([]byte("ready"))
 			return
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)

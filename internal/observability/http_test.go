@@ -45,15 +45,30 @@ func TestHandlerMetricsHealthz(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r2.StatusCode != http.StatusOK {
-		t.Fatalf("healthz status %d want 200", r2.StatusCode)
+		t.Fatalf("healthz liveness status %d want 200", r2.StatusCode)
+	}
+	r2b, err := http.Get(srv.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2b.StatusCode != http.StatusOK {
+		t.Fatalf("readyz with quorum status %d want 200", r2b.StatusCode)
 	}
 	srv2 := httptest.NewServer(c.Handler(func() int { return 0 }))
 	defer srv2.Close()
+	// Liveness stays 200 without quorum; readiness is 503.
 	r3, err := http.Get(srv2.URL + "/healthz")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r3.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("healthz no-quorum status %d want 503", r3.StatusCode)
+	if r3.StatusCode != http.StatusOK {
+		t.Fatalf("healthz liveness without quorum status %d want 200", r3.StatusCode)
+	}
+	r4, err := http.Get(srv2.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r4.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("readyz no-quorum status %d want 503", r4.StatusCode)
 	}
 }

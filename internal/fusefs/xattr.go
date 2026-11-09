@@ -9,22 +9,37 @@ import (
 )
 
 // Syncer is the coordinator seam M5 wires through the volume coordinator.
+// Every mutating Handler path must route through this seam before it may
+// return success: WriteFile via OnWrite, Truncate via OnTruncate, and every
+// fsync/fsyncdir via OnFsync/OnFsyncDir. A nil syncer (strict handler with no
+// coordinator wired) must fail closed with EIO — never acknowledge.
 type Syncer interface {
 	OnWrite(name string, at int64, data []byte) error
+	// OnTruncate must durably commit a size change before success.
+	OnTruncate(name string, size uint64) error
+	// OnFsync must wait for the durable quorum commit of name before success.
+	OnFsync(name string) error
+	// OnFsyncDir must wait for namespace-command durability of name before
+	// success. The empty name denotes the root directory (Root handle fsync).
+	OnFsyncDir(name string) error
 }
 
 // NoopSyncer is the test-double syncer for NewHandler (acknowledges writes).
-// It is NOT a production coordinator; strict mounts must use NewStrictHandler
-// plus a real coordinator via SetSyncer.
+// It is TEST-ONLY and non-durable by definition. Production mounts must use
+// NewStrictHandler plus a real coordinator via SetSyncer; never install this
+// in a production mount.
 type NoopSyncer struct{}
 
 func (NoopSyncer) OnWrite(name string, at int64, data []byte) error { return nil }
+func (NoopSyncer) OnTruncate(name string, size uint64) error        { return nil }
+func (NoopSyncer) OnFsync(name string) error                        { return nil }
+func (NoopSyncer) OnFsyncDir(name string) error                     { return nil }
 
-// SetSyncer installs the coordinator seam used by future mutation paths.
+// SetSyncer installs the coordinator seam used by mutation paths.
+// A nil argument is kept as nil (fail-closed): it does NOT reset to
+// NoopSyncer. Passing nil explicitly leaves the handler without a
+// coordinator, so writes/fsyncs return EIO as for NewStrictHandler.
 func (h *Handler) SetSyncer(s Syncer) {
-	if s == nil {
-		s = NoopSyncer{}
-	}
 	h.syncer = s
 }
 

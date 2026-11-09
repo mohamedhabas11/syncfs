@@ -3,10 +3,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,8 +12,8 @@ import (
 	"text/template"
 
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/mohamedhabas11/syncfs/internal/daemon"
 	"github.com/mohamedhabas11/syncfs/internal/fusefs"
-	"github.com/mohamedhabas11/syncfs/internal/observability"
 )
 
 const unitTemplate = `[Unit]
@@ -148,49 +146,26 @@ func runDaemon(args []string) int {
 		fmt.Fprintln(os.Stderr, "daemon requires --config")
 		return 2
 	}
-	data, err := os.ReadFile(*config)
+	// Recovery-first: New() restores WAL/chunk/metadata from disk and
+	// validates identity + topology before any listener is opened.
+	cfg, err := daemon.LoadConfig(*config)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "daemon config not found: %v\n", err)
-		return 1
-	}
-	// Minimal config: {"listen": "127.0.0.1:8080", "quorum": 1}
-	var cfg struct {
-		Listen string `json:"listen"`
-		Quorum int    `json:"quorum"`
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon config invalid: %v\n", err)
 		return 1
 	}
-	if cfg.Listen == "" {
-		cfg.Listen = "127.0.0.1:8080"
+	d, err := daemon.New(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
+		return 1
 	}
+	defer d.Close()
 	ctx, cancel := signalContext()
 	defer cancel()
-	c := observability.NewCollector()
-	c.SetFromStats(observability.Stats{LeaderQuorum: cfg.Quorum, CommittedIndex: 0})
-	if err := serveDaemon(ctx, cfg.Listen, c); err != nil {
+	if err := d.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
 		return 1
 	}
 	return 0
-}
-
-// serveDaemon starts the metrics/health HTTP server and blocks until ctx ends.
-func serveDaemon(ctx context.Context, listen string, c *observability.Collector) error {
-	srv := &http.Server{Addr: listen, Handler: c.Handler(func() int { return 1 })}
-	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
-	select {
-	case <-ctx.Done():
-		_ = srv.Close()
-		return ctx.Err()
-	case err := <-errCh:
-		if err == http.ErrServerClosed {
-			return nil
-		}
-		return err
-	}
 }
 
 func signalContext() (context.Context, context.CancelFunc) {

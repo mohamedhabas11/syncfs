@@ -9,18 +9,17 @@ import (
 	"github.com/mohamedhabas11/syncfs/internal/observability"
 )
 
+// TestDaemonServesMetrics verifies the observability surface via the
+// post-T02 handler contract: /healthz is liveness (always 200 while serving)
+// and /readyz is readiness (503 without a quorum leader).
 func TestDaemonServesMetrics(t *testing.T) {
 	c := observability.NewCollector()
-	c.SetFromStats(observability.Stats{LeaderQuorum: 1})
 	ln := "127.0.0.1:0"
-	srv := &http.Server{Addr: ln, Handler: c.Handler(func() int { return 1 })}
+	srv := &http.Server{Addr: ln, Handler: c.Handler(func() int { return 0 })}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	defer srv.Close()
-	time.Sleep(100 * time.Millisecond)
-	// Best-effort: httptest-style GET via server Addr loopback when bound.
-	// serveDaemon is exercised by runDaemon smoke in the suite; here we just
-	// verify the collector renders while serving.
+	time.Sleep(50 * time.Millisecond)
 	r, err := http.Get("http://" + ln + "/metrics")
 	if err == nil && r.StatusCode != http.StatusOK {
 		t.Fatalf("metrics status %d", r.StatusCode)

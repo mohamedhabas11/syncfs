@@ -36,6 +36,14 @@ func TestAdminCLIParsing(t *testing.T) {
 	if code := runDaemon([]string{"--config", "/nonexistent-syncfs-test.yaml"}); code != 1 {
 		t.Fatalf("daemon with missing config must exit 1, got %d", code)
 	}
+	// quorum < 2 is rejected (no silent default to 1 for a 3-voter profile).
+	badCfg := t.TempDir() + "/daemon-quorum1.json"
+	if err := os.WriteFile(badCfg, []byte(`{"listen":"127.0.0.1:0","quorum":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runDaemon([]string{"--config", badCfg}); code != 1 {
+		t.Fatalf("daemon quorum 1 must be rejected with 1, got %d", code)
+	}
 	// mount requires an existing directory target
 	if code := runMount([]string{"--volume", "default", "--target", "/nonexistent-syncfs-mnt"}); code != 1 {
 		t.Fatalf("mount with missing target must exit 1, got %d", code)

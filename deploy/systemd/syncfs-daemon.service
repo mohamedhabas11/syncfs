@@ -9,8 +9,21 @@ ExecStart=/usr/bin/syncfs daemon --config /etc/syncfs/node.yaml
 Restart=on-failure
 RestartSec=2
 # The daemon owns /var/lib/syncfs exclusively; applications never mount it.
-# ProtectSystem=strict + ProtectHome=yes + PrivateDevices=false (FUSE passthrough
-# uses the explicit mount unit, not the daemon unit).
+# Pre-create the service user and owned state directory on install:
+#   useradd --system --home /var/lib/syncfs --shell /usr/sbin/nologin syncfs
+#   install -d -o syncfs -g syncfs /var/lib/syncfs /etc/syncfs
+User=syncfs
+Group=syncfs
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/syncfs
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# FUSE passthrough is not used by the daemon unit; the mount unit owns
+# /dev/fuse. Do not add PrivateDevices=false here without review.
 
 [Install]
 WantedBy=multi-user.target
