@@ -98,8 +98,15 @@ func (d *Driver) SetApplyChannel(ch chan<- raftpb.Entry) { d.applyRequested = ch
 // SetChunkExtractor overrides the manifest decoder (tests / non-Command data).
 func (d *Driver) SetChunkExtractor(f func(raftpb.Entry) [][32]byte) { d.chunkExtractor = f }
 
-// Tick advances the logical clock.
-func (d *Driver) Tick() { d.node.Tick() }
+// Tick advances the logical clock. A gapped node (missing committed chunks)
+// does not tick: it must not campaign (Inv.4). Vote grants still arrive via
+// StepMsg (ungated, G-2) so a promoted-but-unapplied voter can still vote.
+func (d *Driver) Tick() {
+	if d.ChunkGap() != nil {
+		return
+	}
+	d.node.Tick()
+}
 
 // Step processes one Ready cycle if any is pending: persist, then expose
 // messages for sending. Persistence happens before Ready.Messages are
@@ -243,19 +250,31 @@ func (d *Driver) ChunkGap() error {
 	if err != nil {
 		return err
 	}
+	// Scan the whole local log (committed + uncommitted): a node holding a
+	// gap entry in its log must not campaign, whether or not the entry has
+	// committed yet (commit resets to 0 on restart until re-committed).
+	_ = hs
 	commit := hs.Commit
-	if commit == 0 {
+	last, lerr := d.storage.LastIndex()
+	if lerr != nil {
+		return lerr
+	}
+	if last == 0 && commit == 0 {
 		return nil
+	}
+	end := last
+	if end == 0 {
+		end = commit
 	}
 	first, err := d.storage.FirstIndex()
 	if err != nil {
 		return err
 	}
 	lo := first
-	if lo > commit+1 {
+	if lo > end+1 {
 		return nil
 	}
-	ents, err := d.storage.Entries(lo, commit+1, 1<<30)
+	ents, err := d.storage.Entries(lo, end+1, 1<<30)
 	if err != nil {
 		if errors.Is(err, raft.ErrCompacted) {
 			// Compacted prefix is in the snapshot; snapshot activation already
