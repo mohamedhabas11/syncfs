@@ -368,7 +368,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 				log.Printf("daemon node %d: accept conn: %v", d.cfg.NodeID, err)
 				return
 			}
-			log.Printf("daemon node %d: accepted conn", d.cfg.NodeID)
 			go d.acceptConn(ctx, conn)
 		}
 	}()
@@ -493,7 +492,6 @@ func (d *Daemon) acceptConn(ctx context.Context, conn *quic.Conn) {
 			_ = conn.CloseWithError(0, "accept done")
 			return
 		}
-		log.Printf("daemon node %d: accepted stream", d.cfg.NodeID)
 		var hdr [4]byte
 		if _, err := io.ReadFull(st, hdr[:]); err != nil {
 			_ = st.Close()
@@ -515,7 +513,7 @@ func (d *Daemon) acceptConn(ctx context.Context, conn *quic.Conn) {
 			log.Printf("daemon node %d: unmarshal raft msg: %v", d.cfg.NodeID, err)
 			continue
 		}
-		log.Printf("daemon node %d: recv %v from %d", d.cfg.NodeID, msg.Type, msg.From)
+
 		c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if err := d.drv.StepMsg(c, msg); err != nil {
 			log.Printf("daemon node %d: StepMsg %v: %v", d.cfg.NodeID, msg.Type, err)
@@ -527,8 +525,7 @@ func (d *Daemon) acceptConn(ctx context.Context, conn *quic.Conn) {
 // sendRaft delivers one Raft message to its destination voter via QUIC
 // using a persistent peer connection (reused across messages).
 func (d *Daemon) sendRaft(ctx context.Context, m raftpb.Message) {
-	log.Printf("daemon node %d: send %v to %d", d.cfg.NodeID, m.Type, m.To)
-	if m.To == 0 || m.To == d.cfg.NodeID {
+		if m.To == 0 || m.To == d.cfg.NodeID {
 		return
 	}
 	conn, err := d.peerConn(ctx, m.To)

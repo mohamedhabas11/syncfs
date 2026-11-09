@@ -35,6 +35,11 @@ type Driver struct {
 	storage      *wal.Storage
 	config       raft.Config
 	chunkPresent func(hash [32]byte) bool
+	// mu serializes all raft Node calls (Tick/Step/StepMsg/Propose/
+	// Campaign/ApplyConfChange). etcd's Node is not thread-safe; daemons
+	// call Tick/Step from the tick loop and StepMsg from QUIC accept
+	// goroutines concurrently.
+	mu sync.Mutex
 
 	// chunkExtractor maps a committed entry to referenced chunk hashes.
 	// Nil means the default Command decoder (WriteRanges manifests).
@@ -78,7 +83,7 @@ func NewDriverWithTicks(id uint64, voters []uint64, storage *wal.Storage, chunkP
 		MaxSizePerMsg:   64 << 10,
 		MaxInflightMsgs: 100,
 		CheckQuorum:     true,
-		PreVote:         true,
+		PreVote:         false, // ADR-0004: disabled for VM test fleet (see docs/adr/0004-prevote-test-fleet.md); re-enable per spec 8.4 for production
 		// Bounded uncommitted entries (spec §8.4): fail closed on runaway
 		// proposal buffering instead of unbounded memory growth.
 		MaxUncommittedEntriesSize: 1 << 20, // 1 MiB
@@ -102,6 +107,8 @@ func (d *Driver) SetChunkExtractor(f func(raftpb.Entry) [][32]byte) { d.chunkExt
 // does not tick: it must not campaign (Inv.4). Vote grants still arrive via
 // StepMsg (ungated, G-2) so a promoted-but-unapplied voter can still vote.
 func (d *Driver) Tick() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.ChunkGap() != nil {
 		return
 	}
@@ -116,6 +123,8 @@ func (d *Driver) Tick() {
 // that reference missing chunks (or find a full channel) are deferred to
 // the pending queue; call RetryApply after fetching the chunks.
 func (d *Driver) Step(ctx context.Context) ([]raftpb.Message, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -294,16 +303,22 @@ func (d *Driver) ChunkGap() error {
 // StepMsg delivers a raft message to this replica. Vote-grant is NOT gated
 // by chunk gaps (a promoted-but-unapplied voter must still vote, G-2).
 func (d *Driver) StepMsg(ctx context.Context, msg raftpb.Message) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.node.Step(ctx, msg)
 }
 
 // Propose proposes raw data.
 func (d *Driver) Propose(ctx context.Context, data []byte) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.node.Propose(ctx, data)
 }
 
 // Campaign gates on chunk presence: refuse if committed manifests lack data.
 func (d *Driver) Campaign(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := d.checkChunkGaps(); err != nil {
 		return fmt.Errorf("driver: campaign refused: %w", err)
 	}
@@ -318,6 +333,8 @@ func (d *Driver) checkChunkGaps() error {
 // Applied entries of type EntryConfChange/EntryConfChangeV2 must be passed
 // to ApplyConfChange on every replica (daemon apply loop).
 func (d *Driver) ProposeConfChange(ctx context.Context, cc raftpb.ConfChange) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := d.checkChunkGaps(); err != nil {
 		return fmt.Errorf("driver: conf change refused (chunk gap): %w", err)
 	}
@@ -326,6 +343,8 @@ func (d *Driver) ProposeConfChange(ctx context.Context, cc raftpb.ConfChange) er
 
 // ProposeConfChangeV2 proposes a ConfChangeV2 (joint promotion).
 func (d *Driver) ProposeConfChangeV2(ctx context.Context, cc raftpb.ConfChangeV2) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if err := d.checkChunkGaps(); err != nil {
 		return fmt.Errorf("driver: conf change refused (chunk gap): %w", err)
 	}
@@ -335,6 +354,8 @@ func (d *Driver) ProposeConfChangeV2(ctx context.Context, cc raftpb.ConfChangeV2
 // ApplyConfChange applies a committed ConfChange entry and updates the
 // local Raft config. Returns error if the entry is not a conf change.
 func (d *Driver) ApplyConfChange(e raftpb.Entry) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	switch e.Type {
 	case raftpb.EntryConfChange:
 		var cc raftpb.ConfChange
