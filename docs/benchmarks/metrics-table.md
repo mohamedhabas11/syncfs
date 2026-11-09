@@ -61,7 +61,7 @@ Throughput flat vs clients on named volume (fsync-serialized); p50 latency grows
 | G2 WAL crash suite | **GREEN** (edge C1) |
 | G3 Chunk recovery | **GREEN** (chunkstore suite + edge) |
 | G4 Coordinator (sentinel/ctx/index/receipts/dangling) | **GREEN** (edge C3) |
-| G5 Driver gap gating | PARTIAL: `ChunkGap`/`RetryApply` deferred apply, non-blocking `Step`, voter validation GREEN (`TestApplyDeferredForMissingChunk`); auto-tick `ChunkGap` check + volume-layer wiring pending (see `known-limitations.md` #14) |
+| G5 Driver gap gating | DONE: tick-gated campaign (log-wide `ChunkGap`), deferred apply, non-blocking `Step`, volume serve-gate (`TestGappedTickDoesNotElect`, `TestGappedLeaderCannotServe`, `TestVolumeConsultsRealDriverChunkGap`); see `known-limitations.md` #14 |
 | G6 Auth (atomic + VerifyConnection+role) | PARTIAL: atomic double-spend + empty GREEN (edge C5), `VerifyConnection` wired + `AcceptClassifiedStream` role-enforced (`TestVerifyConnectionEnforcesCluster`, `TestPerStreamRoleEnforcement`); opener `OpenClassifiedStream` role check is caller duty (see `known-limitations.md` #10) |
 | G7 FUSE (fail-closed/caps/Lookup/Open) | PARTIAL: WriteFile fail-closed + caps GREEN (edge C6), nil-handler + O_DIRECT hardening (`TestNilHandlerFailsClosed`, `TestOpenRejectsODIRECT`); full inode tree (Lookup non-nil, Readdir/Forget) still pending (#15) |
 | G8 Locks end-to-end (ctx/EDEADLK/wake/wiring) | GREEN: cancellable wait + cross-inode `ErrDeadlock` (BFS over all queues) + family queues + `ApplyReleases` wake + state-machine `LOCK_GRANT` via `BindProto` (atomic clone) — `TestDeadlockDetected`, chaos j1 `TestStressLockDeadlockExpiry` PASS; unbounded `BlockingGrant` retained for compat only |
