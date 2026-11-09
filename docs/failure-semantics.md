@@ -18,3 +18,5 @@ Inv.3/4/5/6/10 are defined in `docs/architecture/index.md`.
 | Syncer error on write | rolled back + `EIO` (never a false durable receipt, Inv.10) |
 | Released handle use | `EBADF` on Fsync/Flush after Release |
 | Strict downgrade attempt | never transparently served from async or stale cache (Inv.10) |
+| Corrupt snapshot (node refuses to start) | fail closed (Inv.9). Runbook: (1) stop the daemon, (2) copy the corrupt `snap.bin` to quarantine (`quarantine/snap.bin.<ts>`, never auto-delete), (3) replace the node as a **learner**: enroll, fetch a verified snapshot + chunk manifest from a healthy voter, activate atomically, replay to committed index, promote via membership change (single-change gate). Do NOT hand-edit `snap.bin` or truncate committed entries. |
+| Retry after op-window eviction | retained results are bounded (**10,000 entries / 10 min** client journal; server `OpResult` by index). After eviction the duplicate is forgotten and a retry may re-execute as a fresh mutation (second apply). **Clients must surface `EIO` and reconcile (check the file/version, pick a new op-ID) — never blindly re-execute the same op-ID past the window.** |

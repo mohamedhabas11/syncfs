@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/mohamedhabas11/syncfs/api/v1/gen"
 	"github.com/mohamedhabas11/syncfs/internal/metadata/locks"
@@ -73,7 +72,6 @@ type StateMachine struct {
 	inodes      map[[16]byte]*Entry
 	dentries    map[[16]byte]map[string][16]byte // parent -> name -> inode id
 	ops         map[[16]byte]*OpResult
-	opsAt       map[[16]byte]time.Time // op-ID retain age (bounded N/TTL)
 	volSpecs    map[string]uint64
 	generations map[[16]byte]uint64 // directory generation bumps for lease fencing
 	// LockMgr holds cluster-coherent lock state; LOCK commands apply via it.
@@ -87,7 +85,6 @@ func New() *StateMachine {
 		inodes:      map[[16]byte]*Entry{},
 		dentries:    map[[16]byte]map[string][16]byte{},
 		ops:         map[[16]byte]*OpResult{},
-		opsAt:       map[[16]byte]time.Time{},
 		volSpecs:    map[string]uint64{},
 		generations: map[[16]byte]uint64{},
 		LockMgr:     locks.NewManager(),
@@ -138,10 +135,6 @@ func (m *StateMachine) deepCopy() *StateMachine {
 		r := *v
 		c.ops[k] = &r
 	}
-	c.opsAt = make(map[[16]byte]time.Time, len(m.opsAt))
-	for k, v := range m.opsAt {
-		c.opsAt[k] = v
-	}
 	c.volSpecs = make(map[string]uint64, len(m.volSpecs))
 	for k, v := range m.volSpecs {
 		c.volSpecs[k] = v
@@ -186,11 +179,11 @@ func (m *StateMachine) Lookup(parent [16]byte, name string) ([16]byte, bool) {
 // MaxFileBytes caps Truncate growth (quota gate before admission).
 const MaxFileBytes = 32 << 20 // 32 MiB
 
-// Retention bounds for retained op results (spec §8.2).
-const (
-	opRetentionN   = 10000
-	opRetentionTTL = 10 * time.Minute
-)
+// Retention bound for retained op results (spec §8.2). Deterministic: the
+// bound is enforced by Raft index ordering (oldest committed first), never by
+// local wall clock, so replicas applying the same log prune identically.
+// Wall-clock TTL expiry lives only in the client journal (client-local).
+const opRetentionN = 10000
 
 // Apply executes cmd atomically and retains the op result. On precondition
 // or command failure nothing changes except the REJECTED record.
@@ -205,13 +198,12 @@ func (m *StateMachine) Apply(opID [16]byte, idx uint64, cmd *syncfsapi.Command) 
 	hash := sha256.Sum256(data)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pruneOpsLocked(time.Now())
+	m.pruneOpsLocked()
 	if prev, ok := m.ops[opID]; ok {
 		if prev.PayloadHash != hash {
 			// Op-ID reuse with a different payload: never return the old
 			// COMMITTED; mark the new attempt REJECTED (Inv.7 binding).
 			m.ops[opID] = &OpResult{State: "REJECTED", RaftIndex: idx, Data: []byte("op-id payload mismatch"), PayloadHash: hash}
-			m.opsAt[opID] = time.Now()
 			return fmt.Errorf("%w: op %x payload mismatch", ErrCommandFailed, opID)
 		}
 		return fmt.Errorf("%w: op %x already %s (duplicate refused)", ErrCommandFailed, opID, prev.State)
@@ -237,40 +229,31 @@ func (m *StateMachine) Apply(opID [16]byte, idx uint64, cmd *syncfsapi.Command) 
 	m.inodes = work.inodes
 	m.dentries = work.dentries
 	m.ops = work.ops
-	m.opsAt = work.opsAt
 	m.volSpecs = work.volSpecs
 	m.generations = work.generations
 	m.LockMgr = work.LockMgr
 	m.version.RaftIndex = idx
 	m.version.Revision++
 	m.ops[opID] = &OpResult{State: "COMMITTED", RaftIndex: idx, PayloadHash: hash}
-	m.opsAt[opID] = time.Now()
 	return nil
 }
 
 func (m *StateMachine) rejectLocked(opID [16]byte, idx uint64, why error) error {
 	// Record reject (payload hash: recomputed by caller Apply path).
 	m.ops[opID] = &OpResult{State: "REJECTED", RaftIndex: idx, Data: []byte(why.Error())}
-	m.opsAt[opID] = time.Now()
 	return fmt.Errorf("%w: %s", ErrCommandFailed, why.Error())
 }
 
-func (m *StateMachine) pruneOpsLocked(now time.Time) {
-	// TTL sweep first.
-	for id, at := range m.opsAt {
-		if at.Add(opRetentionTTL).Before(now) {
-			delete(m.ops, id)
-			delete(m.opsAt, id)
-		}
-	}
-	// Capacity sweep: oldest-first until under retention.
+// pruneOpsLocked evicts by smallest RaftIndex (deterministic across
+// replicas); no wall clock is ever consulted.
+func (m *StateMachine) pruneOpsLocked() {
 	for len(m.ops) >= opRetentionN {
 		oldest := [16]byte{}
-		var oldestT time.Time
+		var oldestIdx uint64
 		first := true
-		for id, at := range m.opsAt {
-			if first || at.Before(oldestT) {
-				oldest, oldestT = id, at
+		for id, r := range m.ops {
+			if first || r.RaftIndex < oldestIdx {
+				oldest, oldestIdx = id, r.RaftIndex
 				first = false
 			}
 		}
@@ -278,7 +261,6 @@ func (m *StateMachine) pruneOpsLocked(now time.Time) {
 			break
 		}
 		delete(m.ops, oldest)
-		delete(m.opsAt, oldest)
 	}
 }
 

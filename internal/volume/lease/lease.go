@@ -25,14 +25,13 @@ type Lease struct {
 
 // Manager grants, tracks, and revokes leases.
 type Manager struct {
-	mu     sync.Mutex
-	nextID uint64
-	leases map[uint64]*Lease
-	clock  func() time.Time
-	ttl    time.Duration
-	// currentGen tracks the state machine generation per inode (set by the
-	// volume layer from metadata generations). Unknown inodes are ignored.
+	mu         sync.Mutex
+	nextID     uint64
+	leases     map[uint64]*Lease
+	clock      func() time.Time
+	ttl        time.Duration
 	currentGen map[[16]byte]uint64
+	quorumFn   func() bool // optional majority gate (Inv.5); nil = ungated
 }
 
 // NewManager builds a manager with the given TTLs.
@@ -45,6 +44,13 @@ func NewManager(ttl time.Duration) *Manager {
 	}
 }
 
+// SetQuorumFunc installs the majority gate (nil disables gating for tests).
+func (m *Manager) SetQuorumFunc(fn func() bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.quorumFn = fn
+}
+
 // SetCurrentGeneration records the state machine generation for inode.
 // Valid() then fails leases issued at an older generation (stale cache).
 func (m *Manager) SetCurrentGeneration(inode [16]byte, generation uint64) {
@@ -53,10 +59,14 @@ func (m *Manager) SetCurrentGeneration(inode [16]byte, generation uint64) {
 	m.currentGen[inode] = generation
 }
 
-// Grant issues a lease for inode at the current generation.
+// Grant issues a lease for inode at the current generation. With a quorum
+// gate installed, leases without a majority are refused (nil returned).
 func (m *Manager) Grant(inode [16]byte, generation uint64) *Lease {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.quorumFn != nil && !m.quorumFn() {
+		return nil
+	}
 	m.nextID++
 	l := &Lease{
 		ID:         m.nextID,

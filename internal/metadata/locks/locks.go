@@ -29,6 +29,9 @@ var (
 	ErrWouldBlock = errors.New("locks: would block")
 	// ErrDeadlock is returned when a wait would create a cycle (EDEADLK).
 	ErrDeadlock = errors.New("locks: deadlock detected")
+	// ErrNoQuorum is returned when a quorum-gated grant is attempted without
+	// a current majority (Inv.5: minority cannot grant locks).
+	ErrNoQuorum = errors.New("locks: no quorum")
 )
 
 // Lock is one granted lock (one per owner key, range).
@@ -50,10 +53,11 @@ type queueKey struct {
 
 // Manager owns lock state.
 type Manager struct {
-	mu     sync.Mutex
-	byID   map[[16]byte][]Lock
-	clock  func() time.Time
-	queues map[queueKey][]*waiter
+	mu        sync.Mutex
+	byID      map[[16]byte][]Lock
+	clock     func() time.Time
+	queues    map[queueKey][]*waiter
+	quorumFn  func() bool // optional majority gate (Inv.5); nil = ungated
 }
 
 type waiter struct {
@@ -76,11 +80,23 @@ func NewManager() *Manager {
 func (m *Manager) Clone() *Manager {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	c := &Manager{byID: make(map[[16]byte][]Lock, len(m.byID)), clock: m.clock, queues: map[queueKey][]*waiter{}}
+	c := &Manager{byID: make(map[[16]byte][]Lock, len(m.byID)), clock: m.clock, queues: map[queueKey][]*waiter{}, quorumFn: m.quorumFn}
 	for k, v := range m.byID {
 		c.byID[k] = append([]Lock(nil), v...)
 	}
 	return c
+}
+
+// SetQuorumFunc installs the majority gate (nil disables gating for tests).
+func (m *Manager) SetQuorumFunc(fn func() bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.quorumFn = fn
+}
+
+// quorumOK reports whether the gate (if set) admits a new grant.
+func (m *Manager) quorumOK() bool {
+	return m.quorumFn == nil || m.quorumFn()
 }
 
 // conflicting reports whether two ranges/modes clash. Family separation is
@@ -105,9 +121,13 @@ func conflicting(a, b Lock) bool {
 
 // Try locks non-blocking; ErrWouldBlock if held by anyone else.
 // Same-owner overlapping locks supersede (merge/convert); never self-block.
+// If a quorum gate is installed, grants without a majority fail ErrNoQuorum.
 func (m *Manager) Try(l Lock) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !m.quorumOK() {
+		return ErrNoQuorum
+	}
 	for _, held := range m.byID[l.InodeID] {
 		if held.Owner == l.Owner && held.Family == l.Family && held.Start == l.Start && held.End == l.End && held.Mode == l.Mode {
 			return nil // idempotent
@@ -165,6 +185,10 @@ func (m *Manager) BlockingGrantCtx(ctx context.Context, l Lock) error {
 	if m.wouldDeadlockLocked(l) {
 		m.mu.Unlock()
 		return ErrDeadlock
+	}
+	if !m.quorumOK() {
+		m.mu.Unlock()
+		return ErrNoQuorum
 	}
 	m.queues[key] = append(m.queues[key], w)
 	m.mu.Unlock()

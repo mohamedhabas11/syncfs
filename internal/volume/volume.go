@@ -21,7 +21,16 @@ type Coordinator struct {
 	stores  map[uint64]*chunkstore.Store // voter id -> chunk store
 	quorum  int
 	nextIdx uint64 // monotonic RaftIndex allocator (distinct per proposal)
+	driver  DriverGapChecker // optional; consulted before serving writes
 }
+
+// DriverGapChecker abstracts the Raft driver's chunk-gap gate (Inv.4).
+type DriverGapChecker interface {
+	ChunkGap() error
+}
+
+// SetDriver wires the Raft driver for gap-gated write admission.
+func (c *Coordinator) SetDriver(d DriverGapChecker) { c.driver = d }
 
 // NewCoordinator: stores keyed by voter id. quorum = majority of voters.
 func NewCoordinator(fsm *metadata.StateMachine, stores map[uint64]*chunkstore.Store) *Coordinator {
@@ -42,6 +51,11 @@ func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunk
 	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if c.driver != nil {
+		if err := c.driver.ChunkGap(); err != nil {
+			return nil, err
+		}
 	}
 	// Pre-validate all chunk sizes before writing any chunk (batch atomicity).
 	for i, data := range chunks {
@@ -83,6 +97,11 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return metadata.OpResult{}, err
+	}
+	if c.driver != nil {
+		if err := c.driver.ChunkGap(); err != nil {
+			return metadata.OpResult{}, err
+		}
 	}
 	if r, ok := c.fsm.GetOp(opID); ok {
 		return *r, nil
