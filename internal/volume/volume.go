@@ -137,8 +137,10 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 			return metadata.OpResult{}, fmt.Errorf("volume: WRITE_RANGES receipts from %d distinct peers (need %d): %w", len(peers), c.quorum, ErrNoQuorum)
 		}
 	}
-	// Revoke conflicting leases before committing (spec §8.2 step 6).
+	// Revoke conflicting leases before committing (spec §8.2 step 6), then
+	// wait for ack/expiry on each affected inode (bounded by lease ttl*2).
 	if c.leases != nil {
+		seen := map[[16]byte]bool{}
 		for _, ack := range cmd.GetRequiredLeaseAcks() {
 			if len(ack) == 0 {
 				continue
@@ -148,6 +150,14 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 				id = id<<8 | uint64(b)
 			}
 			_ = c.leases.Revoke(id)
+			if inode, ok := c.leases.InodeFor(id); ok && !seen[inode] {
+				seen[inode] = true
+			}
+		}
+		for inode := range seen {
+			if err := c.leases.WaitClear(inode); err != nil {
+				return metadata.OpResult{}, err
+			}
 		}
 	}
 	// Raft-ordered commit when wired: propose the marshaled command and

@@ -19,7 +19,7 @@ func TestProposeRevokesLeases(t *testing.T) {
 	}
 	defer s.Close()
 	c := NewCoordinator(fsm, map[uint64]*chunkstore.Store{1: s})
-	mgr := lease.NewManager(time.Minute)
+	mgr := lease.NewManager(30 * time.Millisecond)
 	c.SetLeaseManager(mgr)
 	l := mgr.Grant([16]byte{1}, 1)
 	if l == nil {

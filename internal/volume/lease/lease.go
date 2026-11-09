@@ -92,6 +92,17 @@ func (m *Manager) Revoke(id uint64) error {
 	return nil
 }
 
+// InodeFor returns the inode a lease was granted for (for WaitClear gating).
+func (m *Manager) InodeFor(id uint64) ([16]byte, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.leases[id]
+	if !ok {
+		return [16]byte{}, false
+	}
+	return l.InodeID, true
+}
+
 // Ack clears the revocation wait for the holder.
 func (m *Manager) Ack(id uint64) error {
 	m.mu.Lock()

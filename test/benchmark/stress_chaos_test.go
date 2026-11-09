@@ -814,8 +814,14 @@ func TestStressLearnerPromotion(t *testing.T) {
 	if _, err := c.LeaveJoint(4); err != nil {
 		t.Fatalf("LeaveJoint: %v", err)
 	}
+	if !c.Pending() {
+		t.Fatalf("pending must remain until leave commits")
+	}
+	if err := c.ConfirmJointLeave(4); err != nil {
+		t.Fatalf("ConfirmJointLeave: %v", err)
+	}
 	if c.Pending() {
-		t.Fatalf("pending must clear after leave")
+		t.Fatalf("pending must clear after leave commits")
 	}
 	// Drain old voter, then remove (now 4 voters coexist → removal legal).
 	if err := c.BeginDrain(1); err != nil {
