@@ -105,8 +105,9 @@ func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunk
 // apply. For WRITE_RANGES the caller MUST have attached majority
 // PreparedChunks receipts (from WriteChunks) to the command; proposals
 // without a quorum of distinct-peer receipts are refused (payload before
-// reference, Inv.3). Raft-ordered commit lands when the state machine rides
-// Raft in M2-06; caller retries never double-apply (op-ID retained).
+// reference, Inv.3). WRITE_RANGES requires a Raft proposer (fail-closed
+// otherwise); metadata-only kinds (CREATE etc.) may direct-Apply.
+// Caller retries never double-apply (op-ID retained).
 func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *syncfsapi.Command) (metadata.OpResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -162,6 +163,7 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 	}
 	// Raft-ordered commit when wired: propose the marshaled command and
 	// apply at the committed index (idempotency retained by op-ID).
+	// WRITE_RANGES without a proposer is refused (no direct-Apply data path).
 	if c.proposeRaft != nil {
 		data, err := proto.Marshal(cmd)
 		if err != nil {
@@ -176,6 +178,9 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 		}
 		r, _ := c.fsm.GetOp(opID)
 		return *r, nil
+	}
+	if cmd.Kind == syncfsapi.CommandKind_WRITE_RANGES {
+		return metadata.OpResult{}, fmt.Errorf("volume: WRITE_RANGES requires a Raft proposer (direct-Apply data path is disabled): %w", ErrNoQuorum)
 	}
 	c.nextIdx++
 	idx := c.nextIdx
