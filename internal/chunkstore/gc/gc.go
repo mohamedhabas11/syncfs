@@ -131,6 +131,13 @@ func (c *Collector) SweepAndDelete(s *chunkstore.Store, reach Reachability, olde
 	return deleted, nil
 }
 
+// ComposeAndSweep is the production GC loop: pin-set from manifests +
+// retained snapshots + valid leases + in-flight ops (caller supplies each),
+// then delete outside the union past the oldest retained epoch.
+func (c *Collector) ComposeAndSweep(s *chunkstore.Store, manifests, snapshots, leases, inflight []chunkstore.ChunkID, oldestRetained uint64) ([]chunkstore.ChunkID, error) {
+	return c.SweepAndDelete(s, ComposeReachability(manifests, snapshots, leases, inflight), oldestRetained)
+}
+
 // Generation reports the current epoch.
 func (c *Collector) Generation() uint64 {
 	c.mu.Lock()
