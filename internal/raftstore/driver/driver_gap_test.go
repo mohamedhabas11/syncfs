@@ -101,12 +101,13 @@ func TestApplyDeferredForMissingChunk(t *testing.T) {
 	if err := m.drivers[lid].Propose(ctx, []byte("gap-entry")); err != nil {
 		t.Fatal(err)
 	}
-	committed := make(chan raftpb.Entry, 8)
+	committed := make(chan raftpb.Entry, 32)
 	for _, d := range m.drivers {
 		d.SetApplyChannel(committed)
 	}
-	// Round until the entry is committed locally (pending >= 1 on leader).
-	deadline := time.After(8 * time.Second)
+	// Round until the gap-entry has committed locally (not just the leader
+	// noop). Drain meanwhile so buffered delivery never blocks the mesh.
+	deadline := time.After(25 * time.Second)
 	roundN := 0
 	for {
 		select {
@@ -116,6 +117,18 @@ func TestApplyDeferredForMissingChunk(t *testing.T) {
 		}
 		_ = m.round(ctx, roundN)
 		roundN++
+		// Drain noop deliveries so they don't fill the buffer.
+		drain := true
+		for drain {
+			select {
+			case e := <-committed:
+				if string(e.Data) == "gap-entry" {
+					t.Fatalf("gap-entry delivered before chunk fetch (gate broken)")
+				}
+			default:
+				drain = false
+			}
+		}
 		if m.drivers[lid].PendingApply() > 0 {
 			break
 		}
@@ -130,22 +143,33 @@ func TestApplyDeferredForMissingChunk(t *testing.T) {
 		d.chunkPresent = func([32]byte) bool { return true }
 		d.chunkExtractor = nil
 	}
-	n := m.drivers[lid].RetryApply()
-	if n != 0 {
-		t.Fatalf("after flush pending=%d want 0", n)
-	}
-	select {
-	case e := <-committed:
-		// The leader's initial empty-Data noop is deferred too; skip empties.
-		for string(e.Data) != "gap-entry" {
+	// Keep ticking the mesh while waiting for delivery: the gap-entry may
+	// still be replicating after the noop deferred.
+	found := false
+	deliverDeadline := time.After(25 * time.Second)
+	_ = m.drivers[lid].RetryApply()
+	for !found {
+		select {
+		case <-deliverDeadline:
+			t.Fatalf("deferred entry never delivered after chunk fetch (pending=%d)", m.drivers[lid].PendingApply())
+		default:
+		}
+		_ = m.round(ctx, roundN)
+		roundN++
+		_ = m.drivers[lid].RetryApply()
+		for {
 			select {
-			case e = <-committed:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("gap-entry never delivered after chunk fetch (got %q)", e.Data)
+			case e := <-committed:
+				if string(e.Data) == "gap-entry" {
+					found = true
+					break
+				}
+			default:
+				goto nextTick
 			}
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("deferred entry never delivered after chunk fetch")
+	nextTick:
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 

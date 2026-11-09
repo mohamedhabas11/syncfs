@@ -698,3 +698,278 @@ green for every listed test, and `go test ./... -race -count=1` must stay green.
 **Benchmark-gate note:** benchmark only after Criteria 1–3, 5–8 pass; a
 data-race-free green run is necessary but not sufficient — the exit criteria
 are the logic-attacker tests above, not the race detector.
+
+---
+
+## RE-PROBED (2026-11-09, be081e6)
+
+**Tester scope:** FRESH re-run of the original attacker probes; no
+production code edited by this tester. **Baseline:** `git HEAD be081e6`
+("Loop Iter 6: determinism, quarantine, vertical slice, Inv.5 gates",
+full `be081e66963abaa2484f44167b4b316d4cb2ca93`).
+**Toolchain:** host `darwin/arm64` Go 1.26.0
+(`…/go1.26/bin/go`, `GOTOOLCHAIN=local`) **and** Linux `node-a` via
+`docker compose run --rm node-a` (Docker Desktop VM, `go1.26.10
+linux/arm64`). Attacker files were recreated as ephemeral
+`attacker_evidence_test.go` (one per target package, 9 untracked files,
+`??` in `git status`; no tracked production file touched):
+
+```text
+internal/auth/attacker_evidence_test.go
+internal/chunkstore/attacker_evidence_test.go
+internal/client/cache/attacker_evidence_test.go
+internal/fusefs/attacker_evidence_test.go
+internal/metadata/attacker_evidence_test.go
+internal/metadata/locks/attacker_evidence_test.go
+internal/raftstore/wal/attacker_evidence_test.go
+internal/transport/attacker_evidence_test.go
+internal/volume/attacker_evidence_test.go
+```
+
+Every payload is fresh per run (distinct chunk bytes, WAL entry data,
+enrollment fingerprint/nonce, transport nonces); concurrency stress
+uses fresh stores/managers per iteration (no shared payload reuse).
+Two probe shapes are deliberately fail-closed-tolerant, matching the
+§2 contract: a false-durable receipt is a failure, but a returned
+error is a pass — `TestAttackerCompactUndoneByReopen` passes if
+`Compact` either durably compacts *or* refuses without claiming
+success, and `TestAttackerMiddleCorruptionSilentlyTruncates…` passes
+on a hard `Open` error *or* a full `LastIndex=3`. Both branches are
+disclosed below with the observed verbatim error strings.
+
+**Time basis (wall-clock vs log-stamped).** Metadata op-table pruning
+(`metadata.go:249-265 pruneOpsLocked`) and inode IDs are log-order
+deterministic (RaftIndex order, never `time.Now`); the WAL/chunkstore
+durability contract is index-stamped. The only wall-clock assertions
+are liveness bounds (`time.After(2s)` in locks starvation, 1 ms ticker
+in `BlockingGrantCtx`) and FUSE `mtime` (`time.Now` at
+`fusefs.go:92`, `xattr.go:69`, `posix.go:90,126`) — the mtime probe
+pins `mtime` to `now-1h` first so the bump is deterministic without
+sleeps. Enrollment expiry uses a single caller-supplied `now`
+(`time.Now()` once, `ExpiresAt=now+1m`). No probe asserts on
+wall-clock ordering of the op table.
+
+**Verdict: 35/35 PASS on host AND on Linux under `-race`; 0 ×
+`DATA RACE`; `go vet ./...` exit 0; full `go test ./... -count=1
+-race` exit 0 (all packages `ok`, incl. `test/benchmark`).**
+Concurrency probes repeated at `-count=5 -race` PASS (no flakes).
+
+### Per-test PASS/FAIL (verbatim `-v` output, host; Linux identical)
+
+Host command:
+
+```text
+$ go test ./internal/chunkstore/ ./internal/raftstore/wal/ ./internal/metadata/ ./internal/volume/ ./internal/metadata/locks/ ./internal/auth/ ./internal/fusefs/ ./internal/transport/ ./internal/client/cache/ -run 'TestAttacker' -count=1 -race -v
+```
+
+Linux command:
+
+```text
+$ docker compose run --rm node-a go test ./internal/chunkstore/ ./internal/raftstore/wal/ ./internal/metadata/ ./internal/volume/ ./internal/metadata/locks/ ./internal/auth/ ./internal/fusefs/ ./internal/transport/ ./internal/client/cache/ -run 'TestAttacker' -count=1 -race -v
+```
+
+| # | Test (package) | Host | Linux |
+|---|---|---|---|
+| 1 | `TestAttackerMiddleCorruptionDropsLaterDurableChunk` (chunkstore) | PASS | PASS |
+| 2 | `TestAttackerPutAfterCorruptionClaimsSuccessWithoutHealing` (chunkstore) | PASS | PASS |
+| 3 | `TestAttackerGapWritePoisonsDurableLog` (wal) | PASS | PASS |
+| 4 | `TestAttackerSnapshotNotRestoredOnReopen` (wal) | PASS | PASS |
+| 5 | `TestAttackerCompactUndoneByReopen` (wal) | PASS | PASS |
+| 6 | `TestAttackerMiddleCorruptionSilentlyTruncatesCommittedEntries` (wal) | PASS | PASS |
+| 7 | `TestAttackerLinkToMissingParentPanics` (metadata) | PASS | PASS |
+| 8 | `TestAttackerRenameToMissingDstParentPanics` (metadata) | PASS | PASS |
+| 9 | `TestAttackerDotNamesAccepted` (metadata) | PASS | PASS |
+| 10 | `TestAttackerRenameAcceptsSlashInDstName` (metadata) | PASS | PASS |
+| 11 | `TestAttackerUnlinkLeavesZombieInode` (metadata) | PASS | PASS |
+| 12 | `TestAttackerRenameOverwritesExistingDstSilently` (metadata, new) | PASS | PASS |
+| 13 | `TestAttackerDoSetXattrAcceptsBareKey` (metadata, new) | PASS | PASS |
+| 14 | `TestAttackerTruncateUnboundedGrowth` (metadata, new) | PASS | PASS |
+| 15 | `TestAttackerNoQuorumErrorIsSentinel` (volume) | PASS | PASS |
+| 16 | `TestAttackerCancelledContextStillWrites` (volume) | PASS | PASS |
+| 17 | `TestAttackerProposeRaftIndexesAreIdentical` (volume) | PASS | PASS |
+| 18 | `TestAttackerPartialChunkBatchLeavesOrphan` (volume) | PASS | PASS |
+| 19 | `TestAttackerCrossFamilyFalseConflict` (locks) | PASS | PASS |
+| 20 | `TestAttackerBindProtoDropsInodeAndRange` (locks) | PASS | PASS |
+| 21 | `TestAttackerBlockingGrantPanicsOnSecondLock` (locks) | PASS | PASS |
+| 22 | `TestAttackerBlockingGrantStarvedByReleaseSteal` (locks) | PASS | PASS |
+| 23 | `TestAttackerSameOwnerOverlappingUpgradeBlocked` (locks) | PASS | PASS |
+| 24 | `TestAttackerEnrollmentConcurrentDoubleSpend` (auth) | PASS | PASS |
+| 25 | `TestAttackerEnrollmentEmptyProofAccepted` (auth) | PASS | PASS |
+| 26 | `TestAttackerRenameFileOntoDir` (fusefs) | PASS | PASS |
+| 27 | `TestAttackerNamesWithSlashAndDots` (fusefs) | PASS | PASS |
+| 28 | `TestAttackerBareUserXattr` (fusefs) | PASS | PASS |
+| 29 | `TestAttackerWriteOverflowPanics` (fusefs) | PASS | PASS |
+| 30 | `TestAttackerXattrDoesNotBumpMtime` (fusefs) | PASS | PASS |
+| 31 | `TestAttackerTruncateUnboundedGrowth` (fusefs, new) | PASS | PASS |
+| 32 | `TestAttackerControlCapBypass` (transport) | PASS | PASS |
+| 33 | `TestAttackerZeroLengthFrame` (transport) | PASS | PASS |
+| 34 | `TestAttackerConcurrentWriteFrameInterleaves` (transport) | PASS | PASS |
+| 35 | `TestAttackerInvalidateAllKeepsLeases` (client/cache, new) | PASS | PASS |
+
+Verbatim host output (Linux identical except timings; Pebble replay
+log lines are storage-engine noise, not test output):
+
+```text
+=== RUN   TestAttackerMiddleCorruptionDropsLaterDurableChunk
+--- PASS: TestAttackerMiddleCorruptionDropsLaterDurableChunk (0.12s)
+=== RUN   TestAttackerPutAfterCorruptionClaimsSuccessWithoutHealing
+--- PASS: TestAttackerPutAfterCorruptionClaimsSuccessWithoutHealing (0.07s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/chunkstore	1.457s
+=== RUN   TestAttackerGapWritePoisonsDurableLog
+--- PASS: TestAttackerGapWritePoisonsDurableLog (0.02s)
+=== RUN   TestAttackerSnapshotNotRestoredOnReopen
+--- PASS: TestAttackerSnapshotNotRestoredOnReopen (0.02s)
+=== RUN   TestAttackerCompactUndoneByReopen
+--- PASS: TestAttackerCompactUndoneByReopen (0.03s)
+=== RUN   TestAttackerMiddleCorruptionSilentlyTruncatesCommittedEntries
+--- PASS: TestAttackerMiddleCorruptionSilentlyTruncatesCommittedEntries (0.04s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/raftstore/wal	1.319s
+=== RUN   TestAttackerLinkToMissingParentPanics
+--- PASS: TestAttackerLinkToMissingParentPanics (0.00s)
+=== RUN   TestAttackerRenameToMissingDstParentPanics
+--- PASS: TestAttackerRenameToMissingDstParentPanics (0.00s)
+=== RUN   TestAttackerDotNamesAccepted
+--- PASS: TestAttackerDotNamesAccepted (0.00s)
+=== RUN   TestAttackerRenameAcceptsSlashInDstName
+--- PASS: TestAttackerRenameAcceptsSlashInDstName (0.00s)
+=== RUN   TestAttackerUnlinkLeavesZombieInode
+--- PASS: TestAttackerUnlinkLeavesZombieInode (0.00s)
+=== RUN   TestAttackerRenameOverwritesExistingDstSilently
+--- PASS: TestAttackerRenameOverwritesExistingDstSilently (0.00s)
+=== RUN   TestAttackerDoSetXattrAcceptsBareKey
+--- PASS: TestAttackerDoSetXattrAcceptsBareKey (0.00s)
+=== RUN   TestAttackerTruncateUnboundedGrowth
+--- PASS: TestAttackerTruncateUnboundedGrowth (0.00s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/metadata	1.305s
+=== RUN   TestAttackerNoQuorumErrorIsSentinel
+--- PASS: TestAttackerNoQuorumErrorIsSentinel (0.09s)
+=== RUN   TestAttackerCancelledContextStillWrites
+--- PASS: TestAttackerCancelledContextStillWrites (0.03s)
+=== RUN   TestAttackerProposeRaftIndexesAreIdentical
+--- PASS: TestAttackerProposeRaftIndexesAreIdentical (0.03s)
+=== RUN   TestAttackerPartialChunkBatchLeavesOrphan
+--- PASS: TestAttackerPartialChunkBatchLeavesOrphan (0.09s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/volume	1.527s
+=== RUN   TestAttackerCrossFamilyFalseConflict
+--- PASS: TestAttackerCrossFamilyFalseConflict (0.00s)
+=== RUN   TestAttackerBindProtoDropsInodeAndRange
+--- PASS: TestAttackerBindProtoDropsInodeAndRange (0.00s)
+=== RUN   TestAttackerBlockingGrantPanicsOnSecondLock
+--- PASS: TestAttackerBlockingGrantPanicsOnSecondLock (0.00s)
+=== RUN   TestAttackerBlockingGrantStarvedByReleaseSteal
+--- PASS: TestAttackerBlockingGrantStarvedByReleaseSteal (0.06s)
+=== RUN   TestAttackerSameOwnerOverlappingUpgradeBlocked
+--- PASS: TestAttackerSameOwnerOverlappingUpgradeBlocked (0.00s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/metadata/locks	1.268s
+=== RUN   TestAttackerEnrollmentConcurrentDoubleSpend
+--- PASS: TestAttackerEnrollmentConcurrentDoubleSpend (0.00s)
+=== RUN   TestAttackerEnrollmentEmptyProofAccepted
+--- PASS: TestAttackerEnrollmentEmptyProofAccepted (0.00s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/auth	1.208s
+=== RUN   TestAttackerRenameFileOntoDir
+--- PASS: TestAttackerRenameFileOntoDir (0.00s)
+=== RUN   TestAttackerNamesWithSlashAndDots
+--- PASS: TestAttackerNamesWithSlashAndDots (0.00s)
+=== RUN   TestAttackerBareUserXattr
+--- PASS: TestAttackerBareUserXattr (0.00s)
+=== RUN   TestAttackerWriteOverflowPanics
+--- PASS: TestAttackerWriteOverflowPanics (0.00s)
+=== RUN   TestAttackerXattrDoesNotBumpMtime
+--- PASS: TestAttackerXattrDoesNotBumpMtime (0.00s)
+=== RUN   TestAttackerTruncateUnboundedGrowth
+--- PASS: TestAttackerTruncateUnboundedGrowth (0.00s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/fusefs	1.204s
+=== RUN   TestAttackerControlCapBypass
+--- PASS: TestAttackerControlCapBypass (0.00s)
+=== RUN   TestAttackerZeroLengthFrame
+--- PASS: TestAttackerZeroLengthFrame (0.00s)
+=== RUN   TestAttackerConcurrentWriteFrameInterleaves
+--- PASS: TestAttackerConcurrentWriteFrameInterleaves (0.00s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/transport	1.245s
+=== RUN   TestAttackerInvalidateAllKeepsLeases
+--- PASS: TestAttackerInvalidateAllKeepsLeases (0.00s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/client/cache	1.194s
+```
+
+Linux tail (verbatim; all 9 packages `ok`, `--- PASS` count 35):
+
+```text
+=== RUN   TestAttackerControlCapBypass
+--- PASS: TestAttackerControlCapBypass (0.00s)
+=== RUN   TestAttackerZeroLengthFrame
+--- PASS: TestAttackerZeroLengthFrame (0.00s)
+=== RUN   TestAttackerConcurrentWriteFrameInterleaves
+--- PASS: TestAttackerConcurrentWriteFrameInterleaves (0.00s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/transport	1.013s
+=== RUN   TestAttackerInvalidateAllKeepsLeases
+--- PASS: TestAttackerInvalidateAllKeepsLeases (0.00s)
+PASS
+ok  	github.com/mohamedhabas11/syncfs/internal/client/cache	1.013s
+```
+
+Observed fix branches (verbatim error strings, temp probe — not
+committed):
+
+```text
+Compact(2) err=wal: compact 2 beyond snapshot 0 requires snapshot first: requested index is unavailable due to compaction
+Open after mid-corrupt err=wal: corrupt record: crc mismatch
+reopen snap idx=2 err=<nil> first=3
+get after corrupt err=chunkstore: data corrupt
+reput err=<nil>
+get after reput err=<nil> equal=true len=21
+vol err=volume: chunk 0 durable on 1/2 voters (need 2); refusing before commit: volume: no quorum
+```
+
+i.e. Compact now **fails closed** (no snapshot → refuse; durability
+via snapshot-on-reopen, `wal.go:395-403`), mid-log WAL damage is a
+**hard error** (`wal.go:140-144`), chunkstore re-`Put` **self-heals**
+(`chunkstore.go:192-200` verify-then-receipt), and the volume quorum
+error **wraps the sentinel** (`volume.go:82` `%w: ErrNoQuorum`).
+
+### `-race` / concurrency / suite hygiene
+
+```text
+$ grep -i "DATA RACE" reprobe_host_race.log   → (no match, exit 1)
+$ grep -i "DATA RACE" reprobe_linux_race.log  → (no match)
+$ grep -c "^--- PASS" reprobe_host_race.log   → 35
+$ go test ./internal/metadata/locks/ ./internal/auth/ ./internal/transport/ -run 'TestAttacker.*(Concurrent|DoubleSpend|Starved|Interleaves|Panics)' -count=5 -race
+PASS ok locks, PASS ok auth, PASS ok transport (15/15 repeats)
+$ go vet ./...                                 → exit 0
+$ go test ./... -count=1 -race                → exit 0, every package ok (incl. test/benchmark TestEdgeCases)
+```
+
+The enrollment probe uses a deterministic rendezvous `Get` barrier
+(both callers observe `ConsumedAt==zero` before either
+`MarkConsumed`); exactly-one success holds because `MarkConsumed`
+now refuses overwrite (`enrollment.go:70-72`) and `Consume`
+rejects empty proof before `Get` (`enrollment.go:87-89`). The
+locks starvation probe enqueues B then C before `Release`, asserting
+B (head) acquires within 2 s (fails closed on timeout, never hangs).
+The transport probe fans out 8 concurrent `WriteFrame` calls with
+distinct nonces behind a `start` barrier and decodes all 8 frames;
+`frameMu` + single-coalesced-`Write` (`framing.go:121,142-159`)
+makes interleaving impossible.
+
+### Criterion mapping (Round-N §N.4)
+
+Criteria 1–8 are all exercised above and green at `be081e6`:
+C1 WAL (4/4), C2 metadata (5/5 + 3 new-edge = 8/8), C3 volume (4/4),
+C4 locks (5/5), C5 auth (2/2), C6 fusefs (5/5 + 1 new-edge = 6/6),
+C7 transport (3/3), C8 cache (1/1 new-edge). Passing these probes
+means the *attacker-finding* row is fixed; it does not by itself
+clear the independent integration PARTIALs in
+`research/03-spec-validation.md` (Raft-commit write path, Inv.5 on
+locks/leases/membership, opener role check, CLI execution, envelope
+IDs) — those were out of probe scope here and remain as stated
+there. No §11 performance claim is made (UNVERIFIED retained).
+
