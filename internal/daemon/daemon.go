@@ -28,6 +28,8 @@ import (
 	"github.com/mohamedhabas11/syncfs/internal/raftstore/driver"
 	"github.com/mohamedhabas11/syncfs/internal/raftstore/wal"
 	"github.com/mohamedhabas11/syncfs/internal/transport"
+	"github.com/mohamedhabas11/syncfs/internal/volume"
+	"github.com/mohamedhabas11/syncfs/internal/volume/lease"
 	"github.com/quic-go/quic-go"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 	"google.golang.org/protobuf/proto"
@@ -53,6 +55,7 @@ type Daemon struct {
 	srvTLS    *tls.Config
 	peerMu    sync.Mutex
 	peerConns map[uint64]*quic.Conn
+	coord     *volume.Coordinator
 }
 
 // New recovers persistent state from disk. Listeners are NOT opened here;
@@ -137,7 +140,46 @@ func New(cfg Config) (*Daemon, error) {
 		cfg: cfg, wal: st, chunk: chunk, fsm: fsm, drv: drv,
 		collector: observability.NewCollector(),
 		self: self, cliTLS: cliTLS, srvTLS: srvTLS,
+		peerConns: map[uint64]*quic.Conn{},
 	}
+	// Coordinator: local chunk store + remote putters over QUIC ClassChunk,
+	// quorum from configured voters. Lease manager is empty for now (strict
+	// reads go through Ready/leases when clients are wired, T03).
+	coord := volume.NewCoordinator(fsm, map[uint64]*chunkstore.Store{cfg.NodeID: chunk})
+	coord.SetDriver(drv)
+	leases := lease.NewManager(2 * time.Second)
+	coord.SetLeaseManager(leases)
+	remote := map[uint64]volume.RemotePutter{}
+	for _, p := range cfg.Peers {
+		if p.ID == cfg.NodeID {
+			continue
+		}
+		peerID := p.ID
+		remote[peerID] = func(ctx context.Context, id uint64, data []byte) (chunkstore.Receipt, error) {
+			return d.putChunkOnPeer(ctx, id, data)
+		}
+	}
+	coord.SetRemotePutters(remote)
+	coord.SetQuorum(cfg.Quorum())
+	coord.SetRaftProposer(func(c context.Context, data []byte) (uint64, error) {
+		if err := drv.Propose(c, data); err != nil {
+			return 0, err
+		}
+		// Poll FSM until the entry commits+applies (bounded by RequestDeadline).
+		deadline := time.Now().Add(cfg.RequestDeadline)
+		for time.Now().Before(deadline) {
+			hs, _, herr := st.InitialState()
+			if herr == nil && hs.Commit > 0 {
+				// Commit advanced; the apply loop will Apply and Persist.
+				// Return the commit index (actual opID lookup happens in
+				// ProposeCommand via GetOp).
+				return hs.Commit, nil
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return 0, fmt.Errorf("daemon: raft commit timeout")
+	})
+	d.coord = coord
 	d.recovered.Store(true)
 	d.refreshMetrics()
 	return d, nil
@@ -303,8 +345,84 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.quicLn = ql
 
 	// HTTP: /healthz (liveness), /readyz (readiness), /metrics (prometheus),
-	// POST /raft/propose (raw Raft entry bytes for fleet verification).
+	// POST /raft/propose (raw Raft entry bytes for fleet verification),
+	// POST /volume/chunks (quorum chunk prepare) + /volume/command (protobuf Command).
 	mux := http.NewServeMux()
+	// POST /volume/chunks: raw body is split into 64KiB chunks and stored
+	// on a majority (WriterChunks). Response is newline-separated 32B hex IDs.
+	mux.HandleFunc("/volume/chunks", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		if !d.Ready() {
+			http.Error(w, "not-ready", http.StatusServiceUnavailable)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<26))
+		if err != nil || len(body) == 0 {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		var chunks [][]byte
+		for off := 0; off < len(body); off += chunkstore.ChunkSize {
+			end := off + chunkstore.ChunkSize
+			if end > len(body) {
+				end = len(body)
+			}
+			chunks = append(chunks, append([]byte(nil), body[off:end]...))
+		}
+		c, cancel := context.WithTimeout(context.Background(), d.cfg.RequestDeadline)
+		defer cancel()
+		receipts, err := d.coord.WriteChunks(c, chunks)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		_ = receipts
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("chunks-durable"))
+	})
+	// POST /volume/command: protobuf Command (Content-Type: application/protobuf).
+	// Proposes via the coordinator (chunk receipts already attached for WRITE_RANGES).
+	mux.HandleFunc("/volume/command", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		if !d.Ready() {
+			http.Error(w, "not-ready", http.StatusServiceUnavailable)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<22))
+		if err != nil {
+			http.Error(w, "read error", http.StatusBadRequest)
+			return
+		}
+		var cmd syncfsapi.Command
+		if err := proto.Unmarshal(body, &cmd); err != nil {
+			http.Error(w, "invalid protobuf: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		rawID := cmd.GetOperationId()
+		if len(rawID) != 16 {
+			http.Error(w, "operation_id must be 16 bytes", http.StatusBadRequest)
+			return
+		}
+		var opID [16]byte
+		copy(opID[:], rawID)
+		c, cancel := context.WithTimeout(context.Background(), d.cfg.RequestDeadline)
+		defer cancel()
+		res, err := d.coord.ProposeCommand(c, opID, &cmd)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		out, _ := proto.Marshal(&cmd)
+		_ = out
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"state":%q,"raft_index":%d}`, res.State, res.RaftIndex)))
+	})
 	mux.HandleFunc("/raft/propose", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -488,9 +606,18 @@ func (d *Daemon) acceptConn(ctx context.Context, conn *quic.Conn) {
 	for {
 		st, err := transport.AcceptClassifiedStream(ctx, conn, transport.ClassRaft)
 		if err != nil {
-			log.Printf("daemon node %d: accept stream: %v", d.cfg.NodeID, err)
 			_ = conn.CloseWithError(0, "accept done")
 			return
+		}
+		var tag [1]byte
+		if _, err := io.ReadFull(st, tag[:]); err != nil {
+			_ = st.Close()
+			continue
+		}
+		if tag[0] == 3 { // ClassChunk
+			_ = d.acceptChunkStream(st)
+			_ = st.Close()
+			continue
 		}
 		var hdr [4]byte
 		if _, err := io.ReadFull(st, hdr[:]); err != nil {
@@ -510,16 +637,45 @@ func (d *Daemon) acceptConn(ctx context.Context, conn *quic.Conn) {
 		_ = st.Close()
 		var msg raftpb.Message
 		if err := msg.Unmarshal(buf); err != nil {
-			log.Printf("daemon node %d: unmarshal raft msg: %v", d.cfg.NodeID, err)
 			continue
 		}
-
-		c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if err := d.drv.StepMsg(c, msg); err != nil {
-			log.Printf("daemon node %d: StepMsg %v: %v", d.cfg.NodeID, msg.Type, err)
-		}
-		cancel()
+		func() {
+			c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = d.drv.StepMsg(c, msg)
+			cancel()
+		}()
 	}
+}
+
+func (d *Daemon) acceptChunkStream(st interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+}) error {
+	var hdr [4]byte
+	if _, err := io.ReadFull(st, hdr[:]); err != nil {
+		return err
+	}
+	n := binary.BigEndian.Uint32(hdr[:])
+	if n == 0 || n > chunkstore.ChunkSize {
+		return fmt.Errorf("chunk len %d out of range", n)
+	}
+	data := make([]byte, n)
+	if _, err := io.ReadFull(st, data); err != nil {
+		return err
+	}
+	id, rc, err := d.chunk.Put(data)
+	if err != nil {
+		return err
+	}
+	if _, err := st.Write(id[:]); err != nil {
+		return err
+	}
+	var vb [8]byte
+	binary.BigEndian.PutUint64(vb[:], rc.VerifiedBytes)
+	if _, err := st.Write(vb[:]); err != nil {
+		return err
+	}
+	return nil
 }
 
 // sendRaft delivers one Raft message to its destination voter via QUIC
@@ -543,6 +699,10 @@ func (d *Daemon) sendRaft(ctx context.Context, m raftpb.Message) {
 	}
 	b, err := m.Marshal()
 	if err != nil || len(b) == 0 || len(b) > (1<<20) {
+		_ = st.Close()
+		return
+	}
+	if _, err := st.Write([]byte{0}); err != nil { // 0 = ClassRaft
 		_ = st.Close()
 		return
 	}

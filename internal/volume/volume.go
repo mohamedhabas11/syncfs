@@ -21,6 +21,7 @@ type Coordinator struct {
 	mu          sync.Mutex
 	fsm         *metadata.StateMachine
 	stores      map[uint64]*chunkstore.Store // voter id -> chunk store
+	remote      map[uint64]RemotePutter      // voter id -> network putter
 	quorum      int
 	nextIdx     uint64 // monotonic RaftIndex allocator (direct-Apply path only)
 	driver      DriverGapChecker // optional; consulted before serving writes
@@ -79,11 +80,16 @@ func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunk
 		}
 	}
 	var receipts []chunkstore.Receipt
+	totalVoters := len(c.stores) + len(c.remote)
+	if totalVoters == 0 {
+		return nil, fmt.Errorf("volume: no chunk stores configured: %w", ErrNoQuorum)
+	}
 	for i, data := range chunks {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		var this []chunkstore.Receipt
+		peers := map[uint64]struct{}{}
 		for peerID, s := range c.stores {
 			cid, rc, err := s.Put(data)
 			if err != nil {
@@ -92,9 +98,22 @@ func (c *Coordinator) WriteChunks(ctx context.Context, chunks [][]byte) ([]chunk
 			_ = cid
 			rc.PeerID = peerID
 			this = append(this, rc)
+			peers[peerID] = struct{}{}
 		}
-		if len(this) < c.quorum {
-			return nil, fmt.Errorf("volume: chunk %d durable on %d/%d voters (need %d); refusing before commit: %w", i, len(this), len(c.stores), c.quorum, ErrNoQuorum)
+		for peerID, put := range c.remote {
+			if put == nil {
+				continue
+			}
+			rc, err := put(ctx, peerID, data)
+			if err != nil {
+				continue
+			}
+			rc.PeerID = peerID
+			this = append(this, rc)
+			peers[peerID] = struct{}{}
+		}
+		if len(peers) < c.quorum {
+			return nil, fmt.Errorf("volume: chunk %d durable on %d/%d voters (need %d); refusing before commit: %w", i, len(peers), totalVoters, c.quorum, ErrNoQuorum)
 		}
 		receipts = append(receipts, this...)
 	}
