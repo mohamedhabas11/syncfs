@@ -205,6 +205,14 @@ type Root struct {
 }
 
 func (r *Root) attrs(n *NodeState, out *fuse.Attr) {
+	FillAttr(n, out)
+}
+
+// RootAttrs is exposed for childNode (same package).
+func (h *Handler) RootAttrs(n *NodeState, out *fuse.Attr) { FillAttr(n, out) }
+
+// FillAttr copies NodeState into a fuse.Attr (mode includes type bits).
+func FillAttr(n *NodeState, out *fuse.Attr) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	out.Mode = n.mode
@@ -239,22 +247,44 @@ func (r *Root) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut)
 	return syscall.Errno(0)
 }
 
+// childNode is the kernel-visible inode for a flat-root child.
+type childNode struct {
+	fs.Inode
+	h    *Handler
+	name string
+}
+
+// Getattr serves the child's attrs (kernel stat).
+func (c *childNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	c.h.mu.RLock()
+	ns, ok := c.h.root.children[c.name]
+	c.h.mu.RUnlock()
+	if !ok {
+		return syscall.ENOENT
+	}
+	c.h.RootAttrs(ns, &out.Attr)
+	return syscall.Errno(0)
+}
+
+// Open mirrors the strict direct-I/O policy with O_DIRECT rejection.
+func (c *childNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	if flags&oDirectFlag != 0 {
+		return nil, 0, syscall.EINVAL
+	}
+	return &fileHandle{h: c.h}, fuse.FOPEN_DIRECT_IO, syscall.Errno(0)
+}
+
 // Lookup implements fs.NodeLookup: resolve name within root, else ENOENT.
 // Caller credentials are extracted and enforced (EPERM/EACCES on denial).
-//
-// NOTE: the Handler keeps a flat NodeState map; this Lookup populates the
-// kernel entry (attrs) but returns a nil inode. A full go-fuse inode tree
-// (NewPersistentInode per child, Readdir/Forget) is the documented residual
-// (known-limitations #15) — mount use is stat-root only until then.
-func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (inode *fs.Inode, e syscall.Errno) {
 	if r.h == nil || r.h.root == nil {
 		return nil, syscall.ENOENT
 	}
 	caller, hasCaller := extractCaller(ctx)
 	if hasCaller {
 		// Need execute on the parent directory to resolve the name.
-		if e := r.h.root.canAccess(caller, false, false, true); e != 0 {
-			return nil, e
+		if en := r.h.root.canAccess(caller, false, false, true); en != 0 {
+			return nil, en
 		}
 	}
 	r.h.mu.RLock()
@@ -264,12 +294,53 @@ func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs
 		return nil, ErrnoFor("ENOENT")
 	}
 	if hasCaller {
-		if e := child.canAccess(caller, true, false, false); e != 0 {
-			return nil, e
+		if en := child.canAccess(caller, true, false, false); en != 0 {
+			return nil, en
 		}
 	}
 	r.attrs(child, &out.Attr)
-	return nil, syscall.Errno(0)
+	mode := child.mode
+	if child.kind == KDir {
+		mode |= unix.S_IFDIR
+	} else if child.kind == KSymlink {
+		mode |= unix.S_IFLNK
+	} else {
+		mode |= unix.S_IFREG
+	}
+	// NewPersistentInode requires an initialized mount bridge; when
+	// unmounted (unit tests, darwin) it panics. Recover to the legacy
+	// stat-root path (attrs only) so unmounted Lookup fails closed gracefully
+	// while kernel mounts get a traversable child inode.
+	defer func() {
+		if recover() != nil {
+			inode = nil
+		}
+	}()
+	inode = r.NewPersistentInode(ctx, &childNode{h: r.h, name: name}, fs.StableAttr{Mode: mode})
+	return inode, syscall.Errno(0)
+}
+
+// Readdir lists flat-root children for kernel ls.
+func (r *Root) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	if r.h == nil || r.h.root == nil {
+		return nil, syscall.ENOENT
+	}
+	r.h.mu.RLock()
+	defer r.h.mu.RUnlock()
+	var list []fuse.DirEntry
+	for name, child := range r.h.root.children {
+		var mode uint32
+		switch child.kind {
+		case KDir:
+			mode = unix.S_IFDIR | child.mode
+		case KSymlink:
+			mode = unix.S_IFLNK | child.mode
+		default:
+			mode = unix.S_IFREG | child.mode
+		}
+		list = append(list, fuse.DirEntry{Name: name, Mode: mode})
+	}
+	return fs.NewListDirStream(list), syscall.Errno(0)
 }
 
 // fileHandle is the direct-I/O mutable handle (M3-01). Release is
@@ -362,4 +433,7 @@ var (
 	_ fs.NodeFsyncer   = (*Root)(nil)
 	_ fs.NodeReleaser  = (*Root)(nil)
 	_ fs.NodeFlusher   = (*Root)(nil)
+	_ fs.NodeReaddirer = (*Root)(nil)
+	_ fs.NodeGetattrer = (*childNode)(nil)
+	_ fs.NodeOpener    = (*childNode)(nil)
 )
