@@ -4,10 +4,15 @@
 verify cluster formation, health, restart recovery, and Raft proposal flow —
 **not** production readiness.
 
-**Status (2026-11-09, `d4566b1`):** READY FOR VM FLEET TEST (daemon-only).
+**Status (2026-11-09, `9c04570` → Iter 7):** READY FOR VM FLEET TEST (daemon +
+FUSE demo).
 Full `go test ./...` green in Docker; `bootstrap` generates fleet; daemons
-serve live `/healthz`/`/readyz`/`/metrics` + `POST /raft/propose`; restart
-replays WAL + metadata projection (`internal/daemon` recovery tests).
+serve live `/healthz`/`/readyz`/`/metrics` + `POST /raft/propose` +
+`POST /volume/chunks` + `POST /volume/command` (quorum chunks + Raft commit);
+restart replays WAL + metadata projection; `syncfs mount --daemon <url>`
+wires FUSE durability through `WireSyncer` + `syncfs admin test-file` proves
+chunk quorum + metadata commit end-to-end (in-memory Handler tree is the
+test surface; full metadata inode-ID binding is T04 remainder).
 Election via QUIC is transport-proven (persistent conns deliver Raft
 messages) but deterministic 3-process leader election needs VM-clock
 verification — see `docs/deploy-vm.md` step 3 (sequential start).
@@ -20,6 +25,8 @@ verification — see `docs/deploy-vm.md` step 3 (sequential start).
 - [ ] `/healthz` 200 on all, `/readyz` 200 on at least one after election
 - [ ] `POST /raft/propose` on the leader returns 202 for a small payload; payload replays after daemon restart (WAL + metadata projection recovered)
 - [x] `syncfs admin status --endpoint <leader>` prints health/ready
+- [ ] `syncfs admin test-file --endpoint <leader> --name hello --data world` writes durably (chunk quorum + metadata commit)
+- [ ] `syncfs mount --volume default --target /mnt/syncfs --daemon http://<leader>` mounts; `echo hi > /mnt/syncfs/f` + `fsync` succeeds via daemon; second mount reads after restart (local-tree demo; metadata binding pending)
 - [ ] `docs/deploy-vm.md` steps reproduce on fresh VMs (record evidence per run)
 
 ## Explicitly not ready

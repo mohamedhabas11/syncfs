@@ -54,8 +54,9 @@ func TestAdminCLIParsing(t *testing.T) {
 		t.Fatalf("mount with missing target must exit 1, got %d", code)
 	}
 	// Success path mounts (Linux) or fails closed without /dev/fuse (dev host).
+	// Now requires --daemon for durability.
 	if _, err := os.Stat("/dev/fuse"); err != nil {
-		if code := runMount([]string{"--volume", "default", "--target", t.TempDir()}); code != 1 {
+		if code := runMount([]string{"--volume", "default", "--target", t.TempDir(), "--daemon", "http://127.0.0.1:18081"}); code != 1 {
 			t.Fatalf("mount without /dev/fuse must fail closed (1), got %d", code)
 		}
 	}
