@@ -13,17 +13,19 @@ import (
 	"github.com/mohamedhabas11/syncfs/internal/chunkstore"
 	"github.com/mohamedhabas11/syncfs/internal/metadata"
 	"github.com/mohamedhabas11/syncfs/internal/volume/lease"
+	"google.golang.org/protobuf/proto"
 )
 
 // Coordinator wires chunk durability to metadata commitment.
 type Coordinator struct {
-	mu      sync.Mutex
-	fsm     *metadata.StateMachine
-	stores  map[uint64]*chunkstore.Store // voter id -> chunk store
-	quorum  int
-	nextIdx uint64 // monotonic RaftIndex allocator (distinct per proposal)
-	driver  DriverGapChecker // optional; consulted before serving writes
-	leases  *lease.Manager // optional; revoked+waited before proposing (§8.2 step 6)
+	mu          sync.Mutex
+	fsm         *metadata.StateMachine
+	stores      map[uint64]*chunkstore.Store // voter id -> chunk store
+	quorum      int
+	nextIdx     uint64 // monotonic RaftIndex allocator (direct-Apply path only)
+	driver      DriverGapChecker // optional; consulted before serving writes
+	leases      *lease.Manager // optional; revoked+waited before proposing (§8.2 step 6)
+	proposeRaft func(ctx context.Context, data []byte) (uint64, error)
 }
 
 // DriverGapChecker abstracts the Raft driver's chunk-gap gate (Inv.4).
@@ -36,6 +38,14 @@ func (c *Coordinator) SetDriver(d DriverGapChecker) { c.driver = d }
 
 // SetLeaseManager wires the lease manager for revocation-before-commit.
 func (c *Coordinator) SetLeaseManager(m *lease.Manager) { c.leases = m }
+
+// SetRaftProposer wires the Raft commit path (propose marshaled command,
+// wait until the entry commits, return its Raft index). When set,
+// ProposeCommand drives Raft commit instead of direct Apply; when nil the
+// metadata-only direct-Apply path is used (tests).
+func (c *Coordinator) SetRaftProposer(fn func(ctx context.Context, data []byte) (uint64, error)) {
+	c.proposeRaft = fn
+}
 
 // NewCoordinator: stores keyed by voter id. quorum = majority of voters.
 func NewCoordinator(fsm *metadata.StateMachine, stores map[uint64]*chunkstore.Store) *Coordinator {
@@ -139,6 +149,23 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 			}
 			_ = c.leases.Revoke(id)
 		}
+	}
+	// Raft-ordered commit when wired: propose the marshaled command and
+	// apply at the committed index (idempotency retained by op-ID).
+	if c.proposeRaft != nil {
+		data, err := proto.Marshal(cmd)
+		if err != nil {
+			return metadata.OpResult{}, err
+		}
+		idx, err := c.proposeRaft(ctx, data)
+		if err != nil {
+			return metadata.OpResult{}, err
+		}
+		if err := c.fsm.Apply(opID, idx, cmd); err != nil {
+			return metadata.OpResult{}, err
+		}
+		r, _ := c.fsm.GetOp(opID)
+		return *r, nil
 	}
 	c.nextIdx++
 	idx := c.nextIdx
