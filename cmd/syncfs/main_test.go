@@ -20,11 +20,16 @@ func TestAdminCLIParsing(t *testing.T) {
 	if code := runAdmin([]string{"member"}); code != 2 {
 		t.Fatalf("member without --node must exit 2, got %d", code)
 	}
-	if code := runAdmin([]string{"bootstrap", "--cluster-id", "c1", "--out", "/tmp/x"}); code != 0 {
+	out := t.TempDir() + "/fleet"
+	if code := runAdmin([]string{"bootstrap", "--cluster-id", "c1", "--out", out}); code != 0 {
 		t.Fatalf("bootstrap with flags must exit 0, got %d", code)
 	}
-	if code := runAdmin([]string{"status", "--endpoint", "127.0.0.1:5001"}); code != 0 {
-		t.Fatalf("status with endpoint must exit 0, got %d", code)
+	if _, err := os.Stat(out + "/ca.pem"); err != nil {
+		t.Fatalf("bootstrap must write fleet CA: %v", err)
+	}
+	// Status probes the endpoint: unreachable is exit 1 (not a stub 0).
+	if code := runAdmin([]string{"status", "--endpoint", "127.0.0.1:1"}); code != 1 {
+		t.Fatalf("status unreachable must exit 1, got %d", code)
 	}
 	if code := runAdmin([]string{"volume", "--volume", "default", "--op", "status"}); code != 0 {
 		t.Fatalf("volume with flags must exit 0, got %d", code)

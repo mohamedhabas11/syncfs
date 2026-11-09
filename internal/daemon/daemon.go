@@ -347,12 +347,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
-	// Raft tick/step/apply loop. Per-node jitter breaks synchronized
-	// election lockstep (PreVote split-vote without jitter).
+	// Raft tick/step/apply loop. Per-node tick interval breaks synchronized
+	// election lockstep (PreVote split-vote without jitter). 25ms base with
+	// 5ms per-node offset gives 25/30/35ms ticks (500ms+ election windows).
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		tickMs := 10 + int(d.cfg.NodeID%3)*2
+		tickMs := 25 + int(d.cfg.NodeID%3)*5
+		// Stagger first tick by NodeID so sequentially-started fleets elect
+		// deterministically (first node wins before peers campaign).
+		time.Sleep(time.Duration(d.cfg.NodeID) * 200 * time.Millisecond)
 		tick := time.NewTicker(time.Duration(tickMs) * time.Millisecond)
 		metricsTick := time.NewTicker(1 * time.Second)
 		defer tick.Stop()

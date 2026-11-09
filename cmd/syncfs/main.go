@@ -5,11 +5,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"text/template"
+	"time"
 
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/mohamedhabas11/syncfs/internal/daemon"
@@ -77,7 +79,9 @@ func runAdmin(args []string) int {
 func runBootstrap(args []string) int {
 	fs := flag.NewFlagSet("syncfs admin bootstrap", flag.ContinueOnError)
 	clusterID := fs.String("cluster-id", "", "new cluster ID")
-	out := fs.String("out", "", "output config path")
+	out := fs.String("out", "", "fleet output directory (ca.pem + node-{1,2,3}.json/.pem/.key)")
+	peers := fs.String("peers", "127.0.0.1:5001,127.0.0.1:5002,127.0.0.1:5003", "comma-separated 3 peer QUIC addrs")
+	httpAddrs := fs.String("http-addrs", "127.0.0.1:18081,127.0.0.1:18082,127.0.0.1:18083", "comma-separated 3 HTTP listen addrs")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -85,15 +89,23 @@ func runBootstrap(args []string) int {
 		fmt.Fprintln(os.Stderr, "bootstrap requires --cluster-id and --out")
 		return 2
 	}
-	// The bootstrap file is the enrollment root: without a quorum this
-	// cannot create a cluster; the control plane performs the write.
-	fmt.Fprintf(os.Stdout, "bootstrap: cluster %s -> %s (control plane applies)\n", *clusterID, *out)
+	addrs := strings.Split(*peers, ",")
+	httpArr := strings.Split(*httpAddrs, ",")
+	if len(addrs) != 3 || len(httpArr) != 3 {
+		fmt.Fprintln(os.Stderr, "bootstrap requires exactly 3 peer and http addrs")
+		return 2
+	}
+	if err := daemon.GenerateFleet(*clusterID, *out, addrs, httpArr, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "bootstrap: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stdout, "bootstrap: cluster %s fleet -> %s (ca.pem + 3 node configs)\n", *clusterID, *out)
 	return 0
 }
 
 func runStatus(args []string) int {
 	fs := flag.NewFlagSet("syncfs admin status", flag.ContinueOnError)
-	endpoint := fs.String("endpoint", "", "storage node endpoint")
+	endpoint := fs.String("endpoint", "", "storage node HTTP endpoint (e.g. 127.0.0.1:18081)")
 	format := fs.String("format", "text", "output format (text|json)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -102,7 +114,29 @@ func runStatus(args []string) int {
 		fmt.Fprintln(os.Stderr, "status requires --endpoint")
 		return 2
 	}
-	fmt.Fprintf(os.Stdout, "status: %s (format %s)\n", *endpoint, *format)
+	// Probe liveness + readiness + metrics. Unreachable endpoint is exit 1,
+	// not a stub print.
+	client := &http.Client{Timeout: 5 * time.Second}
+	health, hErr := client.Get("http://" + *endpoint + "/healthz")
+	ready, rErr := client.Get("http://" + *endpoint + "/readyz")
+	if hErr != nil {
+		fmt.Fprintf(os.Stderr, "status %s: unreachable: %v\n", *endpoint, hErr)
+		return 1
+	}
+	defer health.Body.Close()
+	rCode := 0
+	if rErr == nil {
+		rCode = ready.StatusCode
+		ready.Body.Close()
+	}
+	if *format == "json" {
+		fmt.Fprintf(os.Stdout, `{"endpoint":%q,"healthz":%d,"readyz":%d}`+"\n", *endpoint, health.StatusCode, rCode)
+	} else {
+		fmt.Fprintf(os.Stdout, "status %s: healthz=%d readyz=%d\n", *endpoint, health.StatusCode, rCode)
+	}
+	if health.StatusCode != http.StatusOK {
+		return 1
+	}
 	return 0
 }
 
