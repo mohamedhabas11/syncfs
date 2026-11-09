@@ -12,6 +12,7 @@ import (
 	syncfsapi "github.com/mohamedhabas11/syncfs/api/v1/gen"
 	"github.com/mohamedhabas11/syncfs/internal/chunkstore"
 	"github.com/mohamedhabas11/syncfs/internal/metadata"
+	"github.com/mohamedhabas11/syncfs/internal/volume/lease"
 )
 
 // Coordinator wires chunk durability to metadata commitment.
@@ -22,6 +23,7 @@ type Coordinator struct {
 	quorum  int
 	nextIdx uint64 // monotonic RaftIndex allocator (distinct per proposal)
 	driver  DriverGapChecker // optional; consulted before serving writes
+	leases  *lease.Manager // optional; revoked+waited before proposing (§8.2 step 6)
 }
 
 // DriverGapChecker abstracts the Raft driver's chunk-gap gate (Inv.4).
@@ -31,6 +33,9 @@ type DriverGapChecker interface {
 
 // SetDriver wires the Raft driver for gap-gated write admission.
 func (c *Coordinator) SetDriver(d DriverGapChecker) { c.driver = d }
+
+// SetLeaseManager wires the lease manager for revocation-before-commit.
+func (c *Coordinator) SetLeaseManager(m *lease.Manager) { c.leases = m }
 
 // NewCoordinator: stores keyed by voter id. quorum = majority of voters.
 func NewCoordinator(fsm *metadata.StateMachine, stores map[uint64]*chunkstore.Store) *Coordinator {
@@ -120,6 +125,19 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 		}
 		if len(peers) < c.quorum {
 			return metadata.OpResult{}, fmt.Errorf("volume: WRITE_RANGES receipts from %d distinct peers (need %d): %w", len(peers), c.quorum, ErrNoQuorum)
+		}
+	}
+	// Revoke conflicting leases before committing (spec §8.2 step 6).
+	if c.leases != nil {
+		for _, ack := range cmd.GetRequiredLeaseAcks() {
+			if len(ack) == 0 {
+				continue
+			}
+			var id uint64
+			for _, b := range ack {
+				id = id<<8 | uint64(b)
+			}
+			_ = c.leases.Revoke(id)
 		}
 	}
 	c.nextIdx++
