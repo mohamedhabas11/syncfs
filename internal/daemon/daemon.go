@@ -302,8 +302,34 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.quicLn = ql
 
-	// HTTP: /healthz (liveness), /readyz (readiness), /metrics (prometheus).
+	// HTTP: /healthz (liveness), /readyz (readiness), /metrics (prometheus),
+	// POST /raft/propose (raw Raft entry bytes for fleet verification).
 	mux := http.NewServeMux()
+	mux.HandleFunc("/raft/propose", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil || len(body) == 0 || len(body) > (1<<20) {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if !d.Ready() {
+			// Leader may be elsewhere; this node reports not-ready so the
+			// client can retry the leader's endpoint.
+			http.Error(w, "not-ready", http.StatusServiceUnavailable)
+			return
+		}
+		c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := d.drv.Propose(c, body); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("proposed"))
+	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if !d.Live() {
 			http.Error(w, "not-live", http.StatusServiceUnavailable)
