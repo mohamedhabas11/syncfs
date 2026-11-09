@@ -34,6 +34,15 @@ func TestJointPromotionFlow(t *testing.T) {
 	if !c.members[4].Promoted {
 		t.Fatalf("leave-joint must promote")
 	}
+	if !c.Pending() {
+		t.Fatalf("pending must remain until leave commits")
+	}
+	if err := c.ConfirmJointLeave(4); err != nil {
+		t.Fatal(err)
+	}
+	if c.Pending() {
+		t.Fatalf("pending must clear after leave commits")
+	}
 	// draining marks the voter but keeps it counted until removal
 	if err := c.BeginDrain(1); err != nil {
 		t.Fatal(err)
@@ -71,8 +80,21 @@ func TestReplacementFlow(t *testing.T) {
 	if err != nil || cc.Type != raftpb.ConfChangeAddNode || cc.NodeID != 4 {
 		t.Fatalf("promotion conf-change: %v %+v", err, cc)
 	}
+	if !c.Pending() {
+		t.Fatalf("pending must remain until promotion commits")
+	}
+	// Duplicate proposal while pending is refused.
+	if _, err := c.RequestPromotion(4); err == nil {
+		t.Fatalf("duplicate proposal while pending must be refused")
+	}
+	if err := c.ConfirmPromotion(4); err != nil {
+		t.Fatal(err)
+	}
 	if c.Pending() {
-		t.Fatalf("pending must clear after promotion")
+		t.Fatalf("pending must clear after promotion commits")
+	}
+	if !c.members[4].Promoted {
+		t.Fatalf("confirm must promote")
 	}
 	// removal of an old voter with 4 voters present is allowed
 	rc, err := c.BeginRemove(1)
