@@ -123,11 +123,11 @@ func New(cfg Config) (*Daemon, error) {
 			return nil, fmt.Errorf("daemon: replay WAL tail onto projection: %w", err)
 		}
 	}
-	drv, err := driver.NewDriver(cfg.NodeID, cfg.Voters(), st, func(h [32]byte) bool {
+	drv, err := driver.NewDriverWithTicks(cfg.NodeID, cfg.Voters(), st, func(h [32]byte) bool {
 		var id chunkstore.ChunkID
 		copy(id[:], h[:])
 		return chunk.Has(id)
-	})
+	}, cfg.ElectionTick, cfg.HeartbeatTick)
 	if err != nil {
 		_ = st.Close()
 		_ = chunk.Close()
@@ -353,10 +353,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		tickMs := 25 + int(d.cfg.NodeID%3)*5
 		// Stagger first tick by NodeID so sequentially-started fleets elect
 		// deterministically (first node wins before peers campaign).
-		time.Sleep(time.Duration(d.cfg.NodeID) * 200 * time.Millisecond)
+		tickMs := 25 + int(d.cfg.NodeID%3)*5
+		time.Sleep(time.Duration(d.cfg.NodeID) * 1000 * time.Millisecond)
 		tick := time.NewTicker(time.Duration(tickMs) * time.Millisecond)
 		metricsTick := time.NewTicker(1 * time.Second)
 		defer tick.Stop()
