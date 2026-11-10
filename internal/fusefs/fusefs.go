@@ -410,8 +410,6 @@ func (r *Root) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (ino
 	return inode, syscall.Errno(0)
 }
 
-
-
 // Readdir lists flat-root children for kernel ls.
 func (r *Root) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	if r.h == nil || r.h.root == nil {

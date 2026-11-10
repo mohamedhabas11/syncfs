@@ -40,12 +40,12 @@ func ServerTLSConfig(certs []tls.Certificate, pool *x509.CertPool, clusterID str
 // servers require them; both sides verify identity).
 func ClientTLSConfig(certs []tls.Certificate, pool *x509.CertPool, clusterID string) (*tls.Config, error) {
 	return &tls.Config{
-		Certificates: certs,
-		NextProtos:   []string{ALPN},
-		MinVersion:   tls.VersionTLS13,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    pool,
-		RootCAs:      pool,
+		Certificates:           certs,
+		NextProtos:             []string{ALPN},
+		MinVersion:             tls.VersionTLS13,
+		ClientAuth:             tls.RequireAndVerifyClientCert,
+		ClientCAs:              pool,
+		RootCAs:                pool,
 		VerifyConnection:       auth.VerifyConnectionFunc(pool, clusterID),
 		SessionTicketsDisabled: true,
 	}, nil

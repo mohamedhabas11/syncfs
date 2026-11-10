@@ -20,3 +20,13 @@
   call `ValidatePrincipalForClass` before `OpenClassifiedStream`
   (caller duty — `internal/transport/framing.go:45`).
 - At rest: LUKS/dm-crypt below the daemon (threat-model bounded in spec §9 and ADR-0001).
+- Control-plane / data-plane HTTP surface: daemon loopback endpoints (`/healthz`,
+  `/readyz`, `/metrics`, `/volume/*`) bind to loopback by default, require mTLS or a
+  bearer token, and enforce bounded bodies; the former unauthenticated
+  `POST /raft/propose` path is removed (mutations flow through the Raft quorum path
+  with the section 8.2 apply barrier).
+- TLS identity: node certificates MUST carry the SAN profile for every address the
+  cluster actually uses (e.g. `spiffe://…/node/<id>` plus the cluster's address names,
+  not only `127.0.0.1`/`localhost`), so multi-host clusters form; `GenerateFleet` MUST
+  retain the offline CA key for later enrollment/replacement; leaf TTL/rotation policy
+  required (825-day leaves without rotation are out of policy).

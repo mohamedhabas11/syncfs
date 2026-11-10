@@ -21,28 +21,28 @@ import (
 )
 
 type result struct {
-	Tool         string  `json:"tool"`
-	CommitSHA    string  `json:"commit_sha"`
-	Env          string  `json:"env"`
-	VolumeType   string  `json:"volume_type"`
-	DataDir      string  `json:"data_dir"`
-	Command      string  `json:"command"`
-	Iterations   int     `json:"iterations"`
-	PayloadBytes int     `json:"payload_bytes"`
-	OpsPerSec    float64 `json:"ops_per_sec"`
-	P50Ms        float64 `json:"p50_ms"`
-	P99Ms        float64 `json:"p99_ms"`
-	MaxMs        float64 `json:"max_ms"`
-	BytesPerSec  float64 `json:"bytes_per_sec"`
-	FsyncsPerEntry int   `json:"fsyncs_per_committed_entry"`
-	AllocBytesPerOp float64 `json:"alloc_bytes_per_op"`
-	MallocsPerOp   float64 `json:"mallocs_per_op"`
-	CPUmsPerOp     float64 `json:"cpu_ms_per_op"`
-	LoopbackRTT    map[string]float64 `json:"loopback_rtt_ms,omitempty"`
-	PeerRTT        map[string]float64 `json:"peer_rtt_ms,omitempty"`
-	PeerStatus     string  `json:"peer_status"`
-	DedupNote      string  `json:"dedup_note"`
-	Date           string  `json:"date"`
+	Tool            string             `json:"tool"`
+	CommitSHA       string             `json:"commit_sha"`
+	Env             string             `json:"env"`
+	VolumeType      string             `json:"volume_type"`
+	DataDir         string             `json:"data_dir"`
+	Command         string             `json:"command"`
+	Iterations      int                `json:"iterations"`
+	PayloadBytes    int                `json:"payload_bytes"`
+	OpsPerSec       float64            `json:"ops_per_sec"`
+	P50Ms           float64            `json:"p50_ms"`
+	P99Ms           float64            `json:"p99_ms"`
+	MaxMs           float64            `json:"max_ms"`
+	BytesPerSec     float64            `json:"bytes_per_sec"`
+	FsyncsPerEntry  int                `json:"fsyncs_per_committed_entry"`
+	AllocBytesPerOp float64            `json:"alloc_bytes_per_op"`
+	MallocsPerOp    float64            `json:"mallocs_per_op"`
+	CPUmsPerOp      float64            `json:"cpu_ms_per_op"`
+	LoopbackRTT     map[string]float64 `json:"loopback_rtt_ms,omitempty"`
+	PeerRTT         map[string]float64 `json:"peer_rtt_ms,omitempty"`
+	PeerStatus      string             `json:"peer_status"`
+	DedupNote       string             `json:"dedup_note"`
+	Date            string             `json:"date"`
 }
 
 func percentile(xs []float64, p int) float64 {
@@ -164,20 +164,20 @@ func main() {
 	cpu1 := cpuMs()
 	ops := float64(*n) / wall
 	res := result{
-		Tool:         "bench-floor",
-		CommitSHA:    os.Getenv("COMMIT_SHA"),
-		Env:          "Docker Desktop Linux VM (aarch64, golang:1.26-alpine)",
-		VolumeType:   *volType,
-		DataDir:      *dir,
-		Command:      strings.Join(os.Args, " "),
-		Iterations:   *n,
-		PayloadBytes: *size,
-		OpsPerSec:    ops,
-		P50Ms:        percentile(lats, 50),
-		P99Ms:        percentile(lats, 99),
-		MaxMs:        percentile(lats, 100),
-		BytesPerSec:  ops * float64(*size),
-		FsyncsPerEntry: 1,
+		Tool:            "bench-floor",
+		CommitSHA:       os.Getenv("COMMIT_SHA"),
+		Env:             "Docker Desktop Linux VM (aarch64, golang:1.26-alpine)",
+		VolumeType:      *volType,
+		DataDir:         *dir,
+		Command:         strings.Join(os.Args, " "),
+		Iterations:      *n,
+		PayloadBytes:    *size,
+		OpsPerSec:       ops,
+		P50Ms:           percentile(lats, 50),
+		P99Ms:           percentile(lats, 99),
+		MaxMs:           percentile(lats, 100),
+		BytesPerSec:     ops * float64(*size),
+		FsyncsPerEntry:  1,
 		AllocBytesPerOp: float64(ms1.TotalAlloc-ms0.TotalAlloc) / float64(*n),
 		MallocsPerOp:    float64(ms1.Mallocs-ms0.Mallocs) / float64(*n),
 		CPUmsPerOp:      (cpu1 - cpu0) / float64(*n),

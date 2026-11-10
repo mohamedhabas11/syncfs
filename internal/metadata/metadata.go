@@ -60,7 +60,7 @@ type Version struct {
 type OpResult struct {
 	State       string // COMMITTED | REJECTED
 	RaftIndex   uint64
-	Data        []byte // failure code text for REJECTED
+	Data        []byte   // failure code text for REJECTED
 	PayloadHash [32]byte // SHA256 of the marshaled command (payload binding)
 }
 

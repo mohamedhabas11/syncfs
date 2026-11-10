@@ -6,8 +6,9 @@
 // payloads so they measure the fsync path, not the Pebble dedup hit.
 //
 // Run:
-//   go test ./test/benchmark/... -run TestEdge -v -count=1 -race
-//   go test ./test/benchmark/... -run XXX -bench 'Edge' -benchtime=100x -v
+//
+//	go test ./test/benchmark/... -run TestEdge -v -count=1 -race
+//	go test ./test/benchmark/... -run XXX -bench 'Edge' -benchtime=100x -v
 package benchmark
 
 import (

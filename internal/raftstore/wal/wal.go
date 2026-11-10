@@ -7,12 +7,15 @@
 //
 // Record format (file <dir>/wal.log, append-only):
 //
-//	[crc32 IEEE (4B)][len (4B BE)][payload]
+//	[crc32 IEEE (4B LE)][len (4B LE)][tag (1B)][payload]
 //
 // payload is a raftpb.Entry or a raftpb.HardState marshaled via protobuf,
-// tagged by a leading byte 0x01 (entry) / 0x02 (hard state). A torn trailing
-// record (CRC/length mismatch) is truncated on open; entries after the
-// truncation point never happened (they were never acked).
+// tagged by a leading byte 0x01 (entry) / 0x02 (hard state). The CRC covers
+// the record header (length + tag) as well as the payload, so a corrupted
+// length field fails closed instead of being misread as a torn tail. A
+// record is treated as torn (ErrTornRecord) ONLY at end-of-log (EOF); any
+// other corruption fails closed (ErrCorrupt → Open fails, node refuses to
+// serve). Entries after a truncation point never happened (never acked).
 package wal
 
 import (
@@ -135,8 +138,9 @@ func (s *Storage) replay() error {
 		rec, n, err := decodeRecord(data[off:])
 		if err != nil {
 			// Torn tail (incomplete tail write — never acked) truncates;
-			// mid-log CRC corruption fails closed (never silently drop
-			// committed entries, Inv.9).
+			// mid-log corruption fails closed (never silently drop committed
+			// entries, Inv.9). Only io.ErrUnexpectedEOF is a torn tail; any
+			// other decode failure (bad length, CRC mismatch) fails closed.
 			if errors.Is(err, io.ErrUnexpectedEOF) {
 				s.truncatedErr = fmt.Errorf("%w: %v", ErrTornRecord, err)
 				break
@@ -200,7 +204,7 @@ func (s *Storage) appendEntryLocked(e raftpb.Entry) error {
 
 // writeRecord appends one record and fdatasyncs before returning.
 func (s *Storage) writeRecord(tag byte, payload []byte) error {
-	crc := crc32.ChecksumIEEE(payload)
+	crc := recordCRC(tag, payload)
 	var hdr [8]byte
 	binary.LittleEndian.PutUint32(hdr[0:], crc)
 	binary.LittleEndian.PutUint32(hdr[4:], uint32(len(payload)))
@@ -425,18 +429,37 @@ type record struct {
 	payload []byte
 }
 
+// recordCRC computes the CRC-32 IEEE over the record header (length + tag)
+// as well as the payload, so a corrupted length field fails closed (it can no
+// longer masquerade as a torn tail) — 2026-11-10 execution review, Iter-8-04.
+func recordCRC(tag byte, payload []byte) uint32 {
+	buf := make([]byte, 5+len(payload))
+	binary.BigEndian.PutUint32(buf[0:4], uint32(len(payload)))
+	buf[4] = tag
+	copy(buf[5:], payload)
+	return crc32.ChecksumIEEE(buf)
+}
+
 func decodeRecord(b []byte) (record, int, error) {
-	if len(b) < 8 {
+	if len(b) < 9 {
+		// Incomplete header at end of log → torn tail.
 		return record{}, 0, io.ErrUnexpectedEOF
 	}
 	crc := binary.LittleEndian.Uint32(b[0:])
 	n := binary.LittleEndian.Uint32(b[4:])
-	if n == 0 || n > maxRecord || uint64(8)+uint64(1)+uint64(n) > uint64(len(b)) {
+	tag := b[8]
+	if n == 0 || n > maxRecord {
+		// Implausible length: corruption, fail closed (not a torn tail).
+		return record{}, 0, errors.New("wal: corrupt record length")
+	}
+	if uint64(9)+uint64(n) > uint64(len(b)) {
+		// Incomplete record at end of log → torn tail.
 		return record{}, 0, io.ErrUnexpectedEOF
 	}
-	payload := b[8+1 : 8+1+n]
-	if crc32.ChecksumIEEE(payload) != crc {
+	payload := b[9 : 9+int(n)]
+	if recordCRC(tag, payload) != crc {
+		// CRC covers header+payload; mismatch is corruption → fail closed.
 		return record{}, 0, errors.New("crc mismatch")
 	}
-	return record{tag: b[8], payload: bytes.Clone(payload)}, 8 + 1 + int(n), nil
+	return record{tag: tag, payload: bytes.Clone(payload)}, 9 + int(n), nil
 }

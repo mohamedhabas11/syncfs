@@ -43,13 +43,13 @@ func TestThreeDaemonClusterRecovery(t *testing.T) {
 		cfg := Config{
 			NodeID: id, ClusterID: "cl-1", DataDir: dir,
 			ListenAddr: "127.0.0.1:0", QuicListen: ":0",
-			Peers: []Peer{{ID: 1, Addr: ":1"}, {ID: 2, Addr: ":2"}, {ID: 3, Addr: ":3"}},
+			Peers:  []Peer{{ID: 1, Addr: ":1"}, {ID: 2, Addr: ":2"}, {ID: 3, Addr: ":3"}},
 			CACert: caPath, NodeCert: crtPath, NodeKey: keyPath,
-			Volume:           VolumeSpec{Name: "v", Consistency: "strict", VoterCount: 3, ChunkSizeBytes: 65536, Durability: "quorum", QuotaBytes: 1 << 30, MaxFileBytes: 1 << 24},
-			ElectionTick:     10,
-			HeartbeatTick:    1,
-			RequestDeadline:  5_000_000_000,
-			ShutdownTimeout:  2_000_000_000,
+			Volume:          VolumeSpec{Name: "v", Consistency: "strict", VoterCount: 3, ChunkSizeBytes: 65536, Durability: "quorum", QuotaBytes: 1 << 30, MaxFileBytes: 1 << 24},
+			ElectionTick:    10,
+			HeartbeatTick:   1,
+			RequestDeadline: 5_000_000_000,
+			ShutdownTimeout: 2_000_000_000,
 		}
 		d, err := New(cfg)
 		if err != nil {

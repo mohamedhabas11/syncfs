@@ -6,6 +6,9 @@ package client
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,64 +39,124 @@ func (w *WireSyncer) httpBase() string {
 	return w.Base
 }
 
-func (w *WireSyncer) post(path string, body []byte, ct string) error {
+func (w *WireSyncer) post(path string, body []byte, ct string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodPost, w.httpBase()+path, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
 	resp, err := w.Client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("daemon %s: %d", path, resp.StatusCode)
+	rb, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("daemon %s: %d", path, resp.StatusCode)
+	}
+	return rb, nil
+}
+
+// chunkReceipt is one durable chunk receipt from the daemon's /volume/chunks.
+type chunkReceipt struct {
+	ChunkID string `json:"chunk_id"`
+	PeerID  uint64 `json:"peer_id"`
+}
+
+// chunksResponse is the /volume/chunks JSON envelope.
+type chunksResponse struct {
+	Receipts []chunkReceipt `json:"receipts"`
+}
+
+// postChunks proves chunk quorum with the daemon and returns durable
+// receipts (Iter-8-07: FUSE → daemon write path attaches these to WRITE_RANGES).
+func (w *WireSyncer) postChunks(data []byte) ([]chunkReceipt, error) {
+	rb, err := w.post("/volume/chunks", data, "application/octet-stream")
+	if err != nil {
+		return nil, err
+	}
+	var cr chunksResponse
+	if err := json.Unmarshal(rb, &cr); err != nil {
+		return nil, fmt.Errorf("daemon /volume/chunks: decode receipts: %w", err)
+	}
+	return cr.Receipts, nil
+}
+
+// preparedReceipts converts durable chunk receipts into protobuf
+// PreparedChunkReceipts (payload before reference: commit needs majority).
+func preparedReceipts(receipts []chunkReceipt) []*syncfsapi.PreparedChunkReceipt {
+	var out []*syncfsapi.PreparedChunkReceipt
+	seen := map[string]bool{}
+	for _, r := range receipts {
+		if len(r.ChunkID) != 64 {
+			continue
+		}
+		var cid [32]byte
+		if _, err := hex.Decode(cid[:], []byte(r.ChunkID)); err != nil {
+			continue
+		}
+		pid := []byte{byte(r.PeerID)}
+		key := string(cid[:]) + string(pid)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, &syncfsapi.PreparedChunkReceipt{ChunkId: cid[:], PeerId: pid})
+	}
+	return out
 }
 
 func (w *WireSyncer) ensureFile(name string) ([16]byte, error) {
 	if id, ok := w.names[name]; ok {
 		return id, nil
 	}
-	// Try CREATE (idempotent retry: duplicate CREATE is rejected but we
-	// still need an ID; derive deterministically from name for the test
-	// fleet: SHA256(name) truncated — must match daemon's deterministic
-	// ID derivation for lookups. For CREATE we generate a stable OpID.
+	// Deterministic op ID from (parent inode, name) — the daemon derives the
+	// inode ID as a pure function of (opID, parent, name) (spec: replay is a
+	// pure function), so retries of the same file map to the same inode.
+	parent := [16]byte{} // root-level file (root inode id = 0)
+	h := sha256.New()
+	h.Write(parent[:])
+	h.Write([]byte(name))
+	sum := h.Sum(nil)
 	var opID [16]byte
-	if _, err := rand.Read(opID[:]); err != nil {
-		return [16]byte{}, err
-	}
+	copy(opID[:], sum[:16])
 	cmd := &syncfsapi.Command{
 		OperationId: opID[:],
 		Kind:        syncfsapi.CommandKind_CREATE,
 		Payload: &syncfsapi.Command_Create{Create: &syncfsapi.CreatePayload{
-			ParentInodeId: make([]byte, 16),
+			ParentInodeId: parent[:],
 			Name:          name,
 		}},
 	}
-	body, _ := proto.Marshal(cmd)
-	_ = w.post("/volume/command", body, "application/protobuf")
-	// Best-effort: derive ID via BLAKE3(OpID+parent+name) as metadata does,
-	// truncated. If the daemon rejected (already exists), the derived ID
-	// still points at the original inode only if OpID matches — it does
-	// not. To avoid divergence, fall back to deterministic name hash and
-	// document that test-fleet CREATE is best-effort (WRITE_RANGES will
-	// still prove quota durability; inode consistency is T04 scope).
-	h := blake3.Sum256([]byte(name))
+	body, err := proto.Marshal(cmd)
+	if err != nil {
+		return [16]byte{}, err
+	}
+	if _, err := w.post("/volume/command", body, "application/protobuf"); err != nil {
+		return [16]byte{}, err
+	}
+	// Inode ID = sha256(opID||parent||name)[:16] — identical derivation to the
+	// daemon's StateMachine.doCreate, given the deterministic opID above.
+	ih := sha256.New()
+	ih.Write(opID[:])
+	ih.Write(parent[:])
+	ih.Write([]byte(name))
+	isum := ih.Sum(nil)
 	var id [16]byte
-	copy(id[:], h[:16])
+	copy(id[:], isum[:16])
 	w.names[name] = id
 	return id, nil
 }
 
 func (w *WireSyncer) OnWrite(name string, at int64, data []byte) error {
-	// Durable chunk prepare.
-	if err := w.post("/volume/chunks", data, "application/octet-stream"); err != nil {
+	// Durable chunk prepare: quorum-prove the bytes, keep the receipts.
+	receipts, err := w.postChunks(data)
+	if err != nil {
 		return err
 	}
 	id, err := w.ensureFile(name)
@@ -112,20 +175,14 @@ func (w *WireSyncer) OnWrite(name string, at int64, data []byte) error {
 		InodeId:     id[:],
 		NewManifest: manifest[:],
 	}}
-	// Attach a dummy majority receipt set: the daemon's WriteChunks already
-	// proved majority for the chunk bytes above; the coordinator requires
-	// prepared_chunks — populate with the daemon's own receipt shape would
-	// need a daemon round-trip. For the HTTP test fleet, POST /volume/chunks
-	// already enforces quorum, so we send receipts as the chunk hashes with
-	// a synthetic peer marker and let the daemon re-verify via coordinator.
-	// (Full receipt plumbing is T03 remainder; this keeps the VM test honest:
-	// chunk quorum is proven, metadata commit is proven, FUSE data is local.)
-	body, _ := proto.Marshal(&cmd)
-	// Best-effort metadata commit; failure surfaces (never silent).
-	if err := w.post("/volume/command", body, "application/protobuf"); err != nil {
-		// If WRITE_RANGES without receipts is refused, still report the
-		// chunk-quorum success distinctly.
-		return fmt.Errorf("chunk quorum ok, metadata commit failed: %w", err)
+	cmd.PreparedChunks = preparedReceipts(receipts)
+	body, err := proto.Marshal(&cmd)
+	if err != nil {
+		return fmt.Errorf("client: marshal WRITE_RANGES: %w", err)
+	}
+	// Metadata commit (idempotent via op-ID); failure surfaces, never silent.
+	if _, err := w.post("/volume/command", body, "application/protobuf"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -144,13 +201,20 @@ func (w *WireSyncer) OnTruncate(name string, size uint64) error {
 		Kind:        syncfsapi.CommandKind_TRUNCATE,
 		Payload:     &syncfsapi.Command_Truncate{Truncate: &syncfsapi.TruncatePayload{InodeId: id[:], Size: size}},
 	}
-	body, _ := proto.Marshal(cmd)
-	return w.post("/volume/command", body, "application/protobuf")
+	body, err := proto.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("client: marshal TRUNCATE: %w", err)
+	}
+	if _, err := w.post("/volume/command", body, "application/protobuf"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (w *WireSyncer) OnFsync(name string) error {
-	// Test fleet: durability already proven by OnWrite's chunk quorum +
-	// metadata commit. Fsync is a durable barrier against the daemon.
+	// The write path already proved chunk quorum + metadata commit (Raft
+	// commit barrier); fsync is the client's durable barrier to the daemon.
+	// Fail closed if the file entry is not resolvable.
 	if _, err := w.ensureFile(name); err != nil {
 		return err
 	}

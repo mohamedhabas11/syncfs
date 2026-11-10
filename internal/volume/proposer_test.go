@@ -20,7 +20,7 @@ func TestWriteRangesWithoutProposerRefused(t *testing.T) {
 	c := NewCoordinator(fsm, map[uint64]*chunkstore.Store{1: s})
 	man := make([]byte, 32)
 	cmd := &syncfsapi.Command{
-		Kind: syncfsapi.CommandKind_WRITE_RANGES,
+		Kind:    syncfsapi.CommandKind_WRITE_RANGES,
 		Payload: &syncfsapi.Command_WriteRanges{WriteRanges: &syncfsapi.WriteRangesPayload{NewManifest: man}},
 		PreparedChunks: []*syncfsapi.PreparedChunkReceipt{
 			{ChunkId: man, PeerId: []byte{1}},

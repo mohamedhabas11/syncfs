@@ -53,11 +53,11 @@ type queueKey struct {
 
 // Manager owns lock state.
 type Manager struct {
-	mu        sync.Mutex
-	byID      map[[16]byte][]Lock
-	clock     func() time.Time
-	queues    map[queueKey][]*waiter
-	quorumFn  func() bool // optional majority gate (Inv.5); nil = ungated
+	mu       sync.Mutex
+	byID     map[[16]byte][]Lock
+	clock    func() time.Time
+	queues   map[queueKey][]*waiter
+	quorumFn func() bool // optional majority gate (Inv.5); nil = ungated
 }
 
 type waiter struct {

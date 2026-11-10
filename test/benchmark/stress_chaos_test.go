@@ -869,7 +869,9 @@ func TestStressLockDeadlockExpiry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	aWait := make(chan error, 1)
-	go func() { aWait <- m.BlockingGrantCtx(ctx, locks.Lock{InodeID: ino2, Family: locks.FamilyFlock, Owner: "A", Mode: locks.Exclusive, Start: 0, End: 100}) }()
+	go func() {
+		aWait <- m.BlockingGrantCtx(ctx, locks.Lock{InodeID: ino2, Family: locks.FamilyFlock, Owner: "A", Mode: locks.Exclusive, Start: 0, End: 100})
+	}()
 	time.Sleep(50 * time.Millisecond)
 	// B requests ino1 (held by A): circular wait → EDEADLK.
 	bCtx, bCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -890,7 +892,9 @@ func TestStressLockDeadlockExpiry(t *testing.T) {
 	// held locks are gone; B can now take ino1. Also A's waiter on ino2 must
 	// still be able to acquire once B releases ino2 (wake path).
 	b2Done := make(chan error, 1)
-	go func() { b2Done <- m.BlockingGrantCtx(context.Background(), locks.Lock{InodeID: ino1, Family: locks.FamilyFlock, Owner: "B", Mode: locks.Exclusive, Start: 0, End: 100}) }()
+	go func() {
+		b2Done <- m.BlockingGrantCtx(context.Background(), locks.Lock{InodeID: ino1, Family: locks.FamilyFlock, Owner: "B", Mode: locks.Exclusive, Start: 0, End: 100})
+	}()
 	select {
 	case err := <-b2Done:
 		if err != nil {
@@ -920,7 +924,9 @@ func TestStressLockExpiryWakesWaiters(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- m.BlockingGrantCtx(context.Background(), locks.Lock{InodeID: ino, Family: locks.FamilyFlock, Owner: "B", Mode: locks.Exclusive, Start: 0, End: 100}) }()
+	go func() {
+		done <- m.BlockingGrantCtx(context.Background(), locks.Lock{InodeID: ino, Family: locks.FamilyFlock, Owner: "B", Mode: locks.Exclusive, Start: 0, End: 100})
+	}()
 	time.Sleep(50 * time.Millisecond)
 	// Session expiry releases in Raft order (ApplyReleases) and wakes waiters.
 	m.ApplyReleases("A")

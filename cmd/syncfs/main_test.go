@@ -37,6 +37,14 @@ func TestAdminCLIParsing(t *testing.T) {
 	if code := runAdmin([]string{"member", "--node", "n2", "--op", "status"}); code != 0 {
 		t.Fatalf("member with flags must exit 0, got %d", code)
 	}
+	// Stubs must fail closed: unimplemented admin ops must NOT fake success
+	// (execution review, Iter-8-08).
+	if code := runAdmin([]string{"volume", "--volume", "default", "--op", "create"}); code != 1 {
+		t.Fatalf("volume create stub must exit 1 (not fake success), got %d", code)
+	}
+	if code := runAdmin([]string{"member", "--node", "n2", "--op", "promote"}); code != 1 {
+		t.Fatalf("member promote stub must exit 1 (not fake success), got %d", code)
+	}
 	// daemon requires an existing config file
 	if code := runDaemon([]string{"--config", "/nonexistent-syncfs-test.yaml"}); code != 1 {
 		t.Fatalf("daemon with missing config must exit 1, got %d", code)

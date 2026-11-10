@@ -30,16 +30,16 @@ type inodeRecord struct {
 }
 
 type envelope struct {
-	Version      int                      `json:"version"`
-	RaftIndex    uint64                   `json:"raft_index"`
-	Revision     uint64                   `json:"revision"`
-	RootID       string                   `json:"root_id"`
-	Inodes       []inodeRecord            `json:"inodes"`
-	Dentries     map[string]map[string]string `json:"dentries"`
-	Ops          map[string]OpResult      `json:"ops"`
-	VolSpecs     map[string]uint64        `json:"vol_specs"`
-	Generations  map[string]uint64        `json:"generations"`
-	Checksum     string                   `json:"checksum"`
+	Version     int                          `json:"version"`
+	RaftIndex   uint64                       `json:"raft_index"`
+	Revision    uint64                       `json:"revision"`
+	RootID      string                       `json:"root_id"`
+	Inodes      []inodeRecord                `json:"inodes"`
+	Dentries    map[string]map[string]string `json:"dentries"`
+	Ops         map[string]OpResult          `json:"ops"`
+	VolSpecs    map[string]uint64            `json:"vol_specs"`
+	Generations map[string]uint64            `json:"generations"`
+	Checksum    string                       `json:"checksum"`
 }
 
 // Encode serializes the state machine deterministically (sorted keys via
@@ -49,7 +49,7 @@ func (m *StateMachine) Encode() ([]byte, error) {
 	defer m.mu.RUnlock()
 	env := envelope{
 		Version: PersistFormatVersion, RaftIndex: m.version.RaftIndex, Revision: m.version.Revision,
-		RootID: hex.EncodeToString(m.rootID[:]),
+		RootID:   hex.EncodeToString(m.rootID[:]),
 		Dentries: map[string]map[string]string{}, Ops: map[string]OpResult{},
 		VolSpecs: map[string]uint64{}, Generations: map[string]uint64{},
 	}

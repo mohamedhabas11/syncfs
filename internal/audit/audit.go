@@ -21,19 +21,19 @@ var defaultRedact = auth.NewRedactor().Redact
 
 // Record is one audit entry.
 type Record struct {
-	Seq      uint64    `json:"seq"`
-	TS       string    `json:"ts"`
-	Actor    string    `json:"actor"`
-	Action   string    `json:"action"`
-	Target   string    `json:"target"`
-	Detail   string    `json:"detail,omitempty"`
-	PrevHash string    `json:"prev_hash"`
+	Seq      uint64 `json:"seq"`
+	TS       string `json:"ts"`
+	Actor    string `json:"actor"`
+	Action   string `json:"action"`
+	Target   string `json:"target"`
+	Detail   string `json:"detail,omitempty"`
+	PrevHash string `json:"prev_hash"`
 }
 
 // Sink appends records thread-safely.
 type Sink struct {
-	mu      sync.Mutex
-	recs    []Record
+	mu       sync.Mutex
+	recs     []Record
 	redactor func(string) string // optional; locks cycle
 }
 

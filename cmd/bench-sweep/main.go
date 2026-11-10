@@ -26,30 +26,30 @@ import (
 )
 
 type row struct {
-	Clients      int     `json:"clients"`
-	OpsPerSec    float64 `json:"ops_per_sec"`
-	P50Ms        float64 `json:"p50_ms"`
-	P99Ms        float64 `json:"p99_ms"`
-	MaxMs        float64 `json:"max_ms"`
-	FsyncsPerEntry int   `json:"fsyncs_per_committed_entry"`
+	Clients         int     `json:"clients"`
+	OpsPerSec       float64 `json:"ops_per_sec"`
+	P50Ms           float64 `json:"p50_ms"`
+	P99Ms           float64 `json:"p99_ms"`
+	MaxMs           float64 `json:"max_ms"`
+	FsyncsPerEntry  int     `json:"fsyncs_per_committed_entry"`
 	AllocBytesPerOp float64 `json:"alloc_bytes_per_op"`
-	MallocsPerOp float64 `json:"mallocs_per_op"`
-	CPUmsPerOp   float64 `json:"cpu_ms_per_op"`
-	WallSecs     float64 `json:"wall_secs"`
-	DedupNote    string  `json:"dedup_note"`
+	MallocsPerOp    float64 `json:"mallocs_per_op"`
+	CPUmsPerOp      float64 `json:"cpu_ms_per_op"`
+	WallSecs        float64 `json:"wall_secs"`
+	DedupNote       string  `json:"dedup_note"`
 }
 
 type envelope struct {
-	Tool       string  `json:"tool"`
-	CommitSHA  string  `json:"commit_sha"`
-	Env        string  `json:"env"`
-	VolumeType string  `json:"volume_type"`
-	DataDir    string  `json:"data_dir"`
-	Command    string  `json:"command"`
+	Tool         string `json:"tool"`
+	CommitSHA    string `json:"commit_sha"`
+	Env          string `json:"env"`
+	VolumeType   string `json:"volume_type"`
+	DataDir      string `json:"data_dir"`
+	Command      string `json:"command"`
 	PayloadBytes int    `json:"payload_bytes"`
-	PerClient  int     `json:"per_client"`
-	Rows       []row   `json:"rows"`
-	Date       string  `json:"date"`
+	PerClient    int    `json:"per_client"`
+	Rows         []row  `json:"rows"`
+	Date         string `json:"date"`
 }
 
 func percentile(xs []float64, p int) float64 {
@@ -175,11 +175,11 @@ func runCount(dir string, clients int, perClient int) (row, error) {
 	return row{
 		Clients: clients, OpsPerSec: ops, P50Ms: percentile(vals, 50),
 		P99Ms: percentile(vals, 99), MaxMs: percentile(vals, 100),
-		FsyncsPerEntry: 6,
+		FsyncsPerEntry:  6,
 		AllocBytesPerOp: float64(ms1.TotalAlloc-ms0.TotalAlloc) / float64(clients*perClient),
 		MallocsPerOp:    float64(ms1.Mallocs-ms0.Mallocs) / float64(clients*perClient),
 		CPUmsPerOp:      (cpu1 - cpu0) / float64(clients*perClient),
-		WallSecs: wall, DedupNote: dedup,
+		WallSecs:        wall, DedupNote: dedup,
 	}, nil
 }
 
@@ -196,7 +196,7 @@ func main() {
 	}
 	env := envelope{
 		Tool: "bench-sweep", CommitSHA: os.Getenv("COMMIT_SHA"),
-		Env: "Docker Desktop Linux VM (aarch64, golang:1.26-alpine)",
+		Env:        "Docker Desktop Linux VM (aarch64, golang:1.26-alpine)",
 		VolumeType: *volType, DataDir: *dir, Command: strings.Join(os.Args, " "),
 		PayloadBytes: 4096, PerClient: *per, Date: time.Now().UTC().Format("2006-01-02"),
 	}

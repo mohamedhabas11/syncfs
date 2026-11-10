@@ -11,6 +11,7 @@ import (
 	"github.com/mohamedhabas11/syncfs/internal/raftstore/driver"
 	"github.com/mohamedhabas11/syncfs/internal/raftstore/wal"
 	"go.etcd.io/etcd/raft/v3/raftpb"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestProposeViaRaftCommit wires the Raft committer: a command proposed via
@@ -108,7 +109,9 @@ func TestProposeViaRaftCommit(t *testing.T) {
 		if err := drivers[leader].Propose(ctx, data); err != nil {
 			return 0, err
 		}
-		// Drive until our marshaled entry commits (seen on the channel).
+		// Drive until our marshaled entry commits (seen on the channel), then
+		// apply it in the coordinator FSM (leader-side apply is coordinator-owned
+		// in this fake; the real daemon applies via its driver apply loop).
 		for {
 			select {
 			case <-ctx.Done():
@@ -124,6 +127,13 @@ func TestProposeViaRaftCommit(t *testing.T) {
 						// Match by index ordering: first non-empty committed entry
 						// after our propose is ours (single in-flight test).
 						committedIdx = e.Index
+						var cmd syncfsapi.Command
+						if err := proto.Unmarshal(e.Data, &cmd); err != nil {
+							return 0, err
+						}
+						if err := fsm.Apply([16]byte{1}, e.Index, &cmd); err != nil {
+							return 0, err
+						}
 						return e.Index, nil
 					}
 				default:

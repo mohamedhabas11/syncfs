@@ -179,8 +179,19 @@ func runVolume(args []string) int {
 		fmt.Fprintln(os.Stderr, "volume requires --volume")
 		return 2
 	}
-	fmt.Fprintf(os.Stdout, "volume %s op %s\n", *volume, *op)
-	return 0
+	switch *op {
+	case "status", "describe":
+		fmt.Fprintf(os.Stdout, "volume %s op %s\n", *volume, *op)
+		return 0
+	case "create":
+		// Stub: volume creation is not implemented in the admin surface yet.
+		// Must not fake success (execution review, Iter-8-08).
+		fmt.Fprintf(os.Stderr, "volume %s create: not implemented\n", *volume)
+		return 1
+	default:
+		fmt.Fprintf(os.Stderr, "volume %s: unknown op %q\n", *volume, *op)
+		return 2
+	}
 }
 
 func runMember(args []string) int {
@@ -194,8 +205,22 @@ func runMember(args []string) int {
 		fmt.Fprintln(os.Stderr, "member requires --node")
 		return 2
 	}
-	fmt.Fprintf(os.Stdout, "member %s op %s\n", *node, *op)
-	return 0
+	switch *op {
+	case "status":
+		fmt.Fprintf(os.Stdout, "member %s op %s\n", *node, *op)
+		return 0
+	case "add-learner":
+		fmt.Fprintf(os.Stderr, "member %s add-learner: not implemented\n", *node)
+		return 1
+	case "promote", "remove":
+		// Stubs: promotion/removal are not implemented in the admin surface
+		// yet; must not fake success (execution review, Iter-8-08).
+		fmt.Fprintf(os.Stderr, "member %s %s: not implemented\n", *node, *op)
+		return 1
+	default:
+		fmt.Fprintf(os.Stderr, "member %s: unknown op %q\n", *node, *op)
+		return 2
+	}
 }
 
 func runDaemon(args []string) int {

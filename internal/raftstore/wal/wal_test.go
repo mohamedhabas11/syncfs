@@ -1,7 +1,10 @@
 package wal
 
 import (
+	"encoding/binary"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"go.etcd.io/etcd/raft/v3"
@@ -110,4 +113,92 @@ func TestIndexGapDetected(t *testing.T) {
 		t.Fatalf("wrong error: %v", err)
 	}
 	s.Close()
+}
+
+// TestMidLogCorruptionFailsClosed: a CRC mismatch in a record that is not at
+// the tail must fail closed (Open errors), never be treated as a torn tail and
+// silently truncate committed entries (2026-11-10 execution review, Iter-8-04).
+func TestMidLogCorruptionFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := raft.Ready{Entries: []raftpb.Entry{{Term: 1, Index: 1, Data: []byte("create")}}, HardState: raftpb.HardState{Term: 1, Vote: 1, Commit: 1}}
+	if err := s.SaveReady(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "wal.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) < 12 {
+		t.Fatalf("short record: %d", len(data))
+	}
+	// Corrupt a payload byte → CRC (header+payload) mismatch → fail closed.
+	data[len(data)-1] ^= 0xff
+	f, err := os.OpenFile(filepath.Join(dir, "wal.log"), os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s3, err := Open(Options{Dir: dir})
+	if err == nil {
+		s3.Close()
+		t.Fatalf("mid-log corruption must fail closed, got clean open")
+	}
+	if errors.Is(err, ErrTornRecord) {
+		t.Fatalf("mid-log corruption must not be classified torn: %v", err)
+	}
+}
+
+// TestCorruptLengthFailsClosed: a corrupted length field fails closed (CRC
+// covers header+payload → mismatch) instead of being read as a torn tail
+// (2026-11-10 execution review, Iter-8-04).
+func TestCorruptLengthFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Append a record whose length field is implausible (huge) → corrupt, fail closed.
+	rec := make([]byte, 0, 16)
+	var l [4]byte
+	binary.BigEndian.PutUint32(l[:], 0x7fffffff)
+	rec = append(rec, l[:]...)
+	var c [4]byte
+	binary.LittleEndian.PutUint32(c[:], recordCRC(0x01, []byte("write")))
+	rec = append(rec, c[:]...)
+	rec = append(rec, 0x01, 'w', 'r', 'i', 't', 'e')
+	f, err := os.OpenFile(filepath.Join(dir, "wal.log"), os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open(Options{Dir: dir})
+	if err == nil {
+		s2.Close()
+		t.Fatalf("corrupt length must fail closed, got clean open")
+	}
+	if errors.Is(err, ErrTornRecord) {
+		t.Fatalf("corrupt length must not be classified torn: %v", err)
+	}
 }

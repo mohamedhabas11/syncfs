@@ -28,6 +28,7 @@ The tracker is this repository; per-milestone truth lives in
 | M3: FUSE strict mount | partial (M3-02 flat-root; kernel depth pending) | M2 | No | Linux FUSE compatibility suite |
 | M4: HA, joining, operations | partial (snapshot/GC, membership, CLI honesty, fault Docker) | M2 and M3 | Limited | Fault, learner, and recovery tests |
 | M5: Qualification | deferred (ADR-0001, needs reference hardware) | M4 plus target workload | No | Benchmark and application HA evidence |
+| Iteration 8: Post-review hardening | in progress (work packages queued) | M2 and M4 | No | P0 fix + end-to-end leader-follower test |
 
 ## Agent Lanes
 
@@ -246,6 +247,119 @@ edit shared schemas or generated code concurrently.
   - **Dependencies**: M5-01; human decision on target service/version.
   - **Parallel**: No.
   - **Verification**: Application vendor test suite plus SyncFS fault scenarios.
+
+## Iteration 8 — Post-review execution hardening (2026-11-10)
+
+Work packages queued from the 2026-11-10 post-implementation execution review
+(run findings confirmed by executing code; read-only confirmations itemised).
+P0 findings gate the next iteration loop; the rest roll into follow-up packages.
+Tracker: `.spec/tasks.md`; loop evidence: `research/evaluator/LOOP-TRACKER.md` (L10).
+
+- [ ] **Iter-8-01 — Leader acknowledges writes without a quorum/apply commit**
+  (P0, critical; confirmed by running code).
+  - **Phase**: M2 (durable replicated core) / M3 (FUSE write path).
+  - **Files**: internal/raftstore/driver (propose→apply barrier), internal/volume
+    (`Coordinator.ProposeCommand`), internal/daemon (propose handler).
+  - **Tracker**: This repository.
+  - **Dependencies**: M2-04, M2-05 (done).
+  - **Parallel**: No.
+  - **Verification**: three-daemon cluster; leader returns `COMMITTED` only after
+    the proposed entry's index is applied by the apply loop; follower-loss case no
+    longer returns `COMMITTED`.
+
+- [ ] **Iter-8-02 — Daemon can elect a leader** (P0, critical; confirmed by running
+  code).
+  - **Phase**: M2 / M4 (HA operations).
+  - **Files**: internal/daemon (tick loop consuming Raft `Ready`).
+  - **Tracker**: This repository.
+  - **Dependencies**: M2-04 (done).
+  - **Parallel**: No.
+  - **Verification**: shipped daemon tick loop elects a leader in a real 3-daemon
+    cluster (target ≈2.1 s after fix); `TestThreeDaemonClusterRecovery` extended to
+    drive `daemon.Run`.
+
+- [ ] **Iter-8-03 — WAL cannot overwrite a conflicting log suffix** (P0, critical;
+  confirmed by reading code paths, execution-adjacent).
+  - **Phase**: M2 (durable replicated core).
+  - **Files**: internal/raftstore/wal, internal/raftstore/driver.
+  - **Tracker**: This repository.
+  - **Dependencies**: M2-01 (done).
+  - **Parallel**: No.
+  - **Verification**: new-leader entry at an index the follower already holds
+    applies without `entry index gap (got N want M)`; `Step` does not return before
+    `Advance()`.
+
+- [ ] **Iter-8-04 — WAL mid-log corruption fails closed** (P0, critical; confirmed
+  by running code).
+  - **Phase**: M2 (durable replicated core).
+  - **Files**: internal/raftstore/wal.
+  - **Tracker**: This repository.
+  - **Dependencies**: M2-01 (done).
+  - **Parallel**: No.
+  - **Verification**: corrupt record header mid-log → fail closed (quarantine /
+    non-voting), never silent truncation of committed entries; torn-tail accepted
+    only at EOF.
+
+- [ ] **Iter-8-05 — HTTP data plane lockdown** (P1; confirmed by running code).
+  - **Phase**: M4 / M3.
+  - **Files**: internal/daemon (HTTP server), cmd/syncfs.
+  - **Tracker**: This repository.
+  - **Dependencies**: M2-05, M4-03 (done).
+  - **Parallel**: No.
+  - **Verification**: `POST /raft/propose` removed; `/volume/*` and health/metrics
+    bound to loopback with mTLS-or-token; body bounded; unauthenticated junk → 4xx.
+
+- [ ] **Iter-8-06 — TLS SAN coverage, CA key retention, leaf rotation** (P1;
+  confirmed by running code + source read).
+  - **Phase**: M1 / M4.
+  - **Files**: internal/auth (PKI), internal/daemon.
+  - **Tracker**: This repository.
+  - **Dependencies**: M1-03 (done).
+  - **Parallel**: No.
+  - **Verification**: multi-host cluster dials (e.g. `127.0.0.2`) pass x509 SAN
+    verification; `GenerateFleet` retains the CA key; leaf TTL within rotation
+    policy.
+
+- [ ] **Iter-8-07 — FUSE→daemon write path** (P1; confirmed by running code).
+  - **Phase**: M3 / M2.
+  - **Files**: internal/fusefs (WireSyncer), internal/daemon (`/volume/*` handlers).
+  - **Tracker**: This repository.
+  - **Dependencies**: M2-05, M3-01 (done).
+  - **Parallel**: No.
+  - **Verification**: `WireSyncer.OnWrite` sends `WRITE_RANGES` with chunk receipts and
+    derives inode IDs consistently; `OnFsync` on a never-existing file fails closed.
+
+- [ ] **Iter-8-08 — Config durations, format gate, admin/mount CLI, Apply cost**
+  (P2; confirmed by reading code).
+  - **Phase**: M4.
+  - **Files**: internal/daemon/config, cmd/syncfs, internal/metadata (`Apply`),
+    Makefile / CI (format gate).
+  - **Tracker**: This repository.
+  - **Dependencies**: M4-03 (done).
+  - **Parallel**: No.
+  - **Verification**: `"request_deadline": "5s"` accepted; `gofmt -l -s` clean; admin
+    `--op promote` / `volume --op create` act instead of printing success; `mount`
+    without `--daemon` exits 2; `Apply` deep-copy cost addressed.
+
+- [ ] **Iter-8-09 — Packaging and tooling honesty** (P2; read-not-executed
+  confirmations).
+  - **Phase**: M1 / M4 / release prep.
+  - **Files**: go.mod, Makefile, .goreleaser.yaml, deploy/systemd, cmd/syncfs loader.
+  - **Tracker**: This repository.
+  - **Dependencies**: M1-01 (done).
+  - **Parallel**: No.
+  - **Verification**: `go mod tidy` clears `// indirect` markers on direct imports;
+    Makefile `clean` stops at `/bin`; goreleaser ldflags wire `main.version` and ship
+    `--version`; systemd unit + Docker config paths + loader formats aligned.
+
+- [ ] **Iter-8-10 — Release and CI gates** (P2; read-not-executed confirmations).
+  - **Phase**: M4 / M5 / release prep.
+  - **Files**: mike deploy config, .github/workflows/release.yml.
+  - **Tracker**: This repository.
+  - **Dependencies**: M4-03 (done).
+  - **Parallel**: No.
+  - **Verification**: `mike deploy` runs with `--push`; release workflow gains a test
+    gate.
 
 ## Decisions & Rationale
 

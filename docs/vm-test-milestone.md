@@ -15,7 +15,12 @@ chunk quorum + metadata commit end-to-end (in-memory Handler tree is the
 test surface; full metadata inode-ID binding is T04 remainder).
 Election via QUIC is transport-proven (persistent conns deliver Raft
 messages) but deterministic 3-process leader election needs VM-clock
-verification — see `docs/deploy-vm.md` step 3 (sequential start).
+verification — see `docs/deploy-vm.md` step 3 (sequential start). **2026-11-10
+execution review:** the daemon's own tick loop could not elect a leader (polled
+`Ready()` without blocking after `Tick()`); fix queued in tasks `Iter-8-02`
+(dedicated `Ready` consumption loop). The real 3-daemon end-to-end election proof
+(kill follower + leader) is queued under the next iteration's work packages
+(`Iter-8-01`, `Iter-8-02`).
 
 ## Ready when (checklist for VM run)
 
@@ -23,7 +28,7 @@ verification — see `docs/deploy-vm.md` step 3 (sequential start).
 - [x] `scripts/bootstrap-fleet.sh` generates `./fleet` (CA + 3 configs)
 - [ ] Three daemons start with `syncfs daemon --config ./fleet/node-{1,2,3}.json` (sequentially, 250ms+ apart)
 - [ ] `/healthz` 200 on all, `/readyz` 200 on at least one after election
-- [ ] `POST /raft/propose` on the leader returns 202 for a small payload; payload replays after daemon restart (WAL + metadata projection recovered)
+- [ ] Leader-ack mutation path returns success only after quorum commit + apply (via Raft-proposed command; `/raft/propose` removal pending `Iter-8-05`); payload replays after daemon restart (WAL + metadata projection recovered)
 - [x] `syncfs admin status --endpoint <leader>` prints health/ready
 - [ ] `syncfs admin test-file --endpoint <leader> --name hello --data world` writes durably (chunk quorum + metadata commit)
 - [ ] `syncfs mount --volume default --target /mnt/syncfs --daemon http://<leader>` mounts; `echo hi > /mnt/syncfs/f` + `fsync` succeeds via daemon; second mount reads after restart (local-tree demo; metadata binding pending)

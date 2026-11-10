@@ -17,7 +17,7 @@ type Mesh struct {
 	drivers map[uint64]*driver.Driver
 	order   []uint64
 	harness *fault.Harness // optional fault injection (partition/kill/pause)
-	roundN  int             // rotor for single-node-per-round ticking
+	roundN  int            // rotor for single-node-per-round ticking
 }
 
 // NewMesh builds drivers from a name->id mapping.

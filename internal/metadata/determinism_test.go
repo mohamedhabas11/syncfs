@@ -17,7 +17,7 @@ func TestDeterministicReplay(t *testing.T) {
 	}
 	for i := 0; i < 20; i++ {
 		op := [16]byte{byte(i), 9}
-		name := string(rune('a' + i/5)) + string(rune('0' + i%10))
+		name := string(rune('a'+i/5)) + string(rune('0'+i%10))
 		if err := a.Apply(op, uint64(i+1), mk(name)); err != nil {
 			t.Fatalf("replica A apply %d: %v", i, err)
 		}

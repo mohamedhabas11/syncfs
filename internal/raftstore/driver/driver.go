@@ -48,8 +48,8 @@ type Driver struct {
 	applyRequested chan<- raftpb.Entry
 	// pendingApply defers gap-blocked entries (and channel-full backpressure)
 	// without blocking Ready processing (Inv.4 + §8.4 rule 4).
-	applyMu  sync.Mutex
-	pending  []raftpb.Entry
+	applyMu sync.Mutex
+	pending []raftpb.Entry
 }
 
 // NewDriver builds a driver for the given id/voters.
@@ -103,6 +103,11 @@ func (d *Driver) SetApplyChannel(ch chan<- raftpb.Entry) { d.applyRequested = ch
 // SetChunkExtractor overrides the manifest decoder (tests / non-Command data).
 func (d *Driver) SetChunkExtractor(f func(raftpb.Entry) [][32]byte) { d.chunkExtractor = f }
 
+// ReadyCh exposes the underlying raft Ready channel. Consumers MUST drain it
+// from a dedicated loop (the daemon tick loop now does); etcd's Node is not
+// thread-safe and Tick/Step may race with a blocking Ready reader.
+func (d *Driver) ReadyCh() <-chan raft.Ready { return d.node.Ready() }
+
 // Tick advances the logical clock. A gapped node (missing committed chunks)
 // does not tick: it must not campaign (Inv.4). Vote grants still arrive via
 // StepMsg (ungated, G-2) so a promoted-but-unapplied voter can still vote.
@@ -132,25 +137,42 @@ func (d *Driver) Step(ctx context.Context) ([]raftpb.Message, error) {
 	}
 	select {
 	case r := <-d.node.Ready():
-		if err := d.storage.SaveReady(r); err != nil {
-			return nil, fmt.Errorf("driver: save ready: %w", err)
-		}
-		d.node.Advance()
-		// Retry earlier deferred entries first (preserves in-order apply).
-		d.retryPendingLocked()
-		for _, e := range r.CommittedEntries {
-			if d.entryGap(e) != nil {
-				d.applyMu.Lock()
-				d.pending = append(d.pending, e)
-				d.applyMu.Unlock()
-				continue
-			}
-			d.deliver(e)
-		}
-		return r.Messages, nil
+		return d.stepReady(r)
 	default:
 		return nil, nil
 	}
+}
+
+// StepReady processes one explicitly-delivered Ready cycle (dedicated
+// consumer loop; see Driver.ReadyCh).
+func (d *Driver) StepReady(r raft.Ready) ([]raftpb.Message, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.stepReady(r)
+}
+
+// stepReady assumes d.mu is held (called from Step / StepReady under the lock).
+func (d *Driver) stepReady(r raft.Ready) ([]raftpb.Message, error) {
+	if err := d.storage.SaveReady(r); err != nil {
+		// Always advance the Raft state machine even when persistence fails:
+		// returning before Advance() wedges the node permanently (2026-11-10
+		// execution review, Iter-8-03).
+		d.node.Advance()
+		return nil, fmt.Errorf("driver: save ready: %w", err)
+	}
+	d.node.Advance()
+	// Retry earlier deferred entries first (preserves in-order apply).
+	d.retryPendingLocked()
+	for _, e := range r.CommittedEntries {
+		if d.entryGap(e) != nil {
+			d.applyMu.Lock()
+			d.pending = append(d.pending, e)
+			d.applyMu.Unlock()
+			continue
+		}
+		d.deliver(e)
+	}
+	return r.Messages, nil
 }
 
 // deliver sends e to the apply channel without blocking; overflow defers.

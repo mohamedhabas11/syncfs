@@ -14,8 +14,15 @@ import (
 )
 
 // GenerateFleet creates cluster CA, 3 node leaves, and configs under outDir.
-// addrs are the 3 peer QUIC addresses (e.g. node1:5001). httpAddrs are the
-// 3 HTTP listen addresses. DataDirs are the 3 data directories (may be empty → outDir/data-{1,2,3}).
+// addrs are the 3 peer QUIC addresses (e.g. node1:5001 or 127.0.0.2:5001).
+// httpAddrs are the 3 HTTP listen addresses. DataDirs are the 3 data
+// directories (may be empty → outDir/data-{1,2,3}).
+//
+// Iteration 8 hardening (2026-11-10): the CA key is retained on disk
+// (ca.key, operator-only) to enable offline leaf rotation, and each node leaf
+// is issued with the SANs derived from its dial address (IP literals become IP
+// SANs, hostnames become DNS SANs) so peers can dial each other by address
+// (e.g. 127.0.0.2) instead of only the loopback defaults (Iter-8-06).
 func GenerateFleet(clusterID string, outDir string, addrs, httpAddrs, dataDirs []string) error {
 	if clusterID == "" || outDir == "" {
 		return fmt.Errorf("fleet: cluster-id and out dir required")
@@ -49,6 +56,10 @@ func GenerateFleet(clusterID string, outDir string, addrs, httpAddrs, dataDirs [
 	if err := os.WriteFile(caPath, ca.CertPEM(), 0600); err != nil {
 		return err
 	}
+	// Retain the CA private key for operator-side leaf rotation (Iter-8-06).
+	if err := os.WriteFile(filepath.Join(outDir, "ca.key"), ca.KeyPEM(), 0600); err != nil {
+		return err
+	}
 	peers := []Peer{
 		{ID: 1, Addr: addrs[0]},
 		{ID: 2, Addr: addrs[1]},
@@ -56,7 +67,8 @@ func GenerateFleet(clusterID string, outDir string, addrs, httpAddrs, dataDirs [
 	}
 	for i := 0; i < 3; i++ {
 		id := uint64(i + 1)
-		leaf, err := ca.IssueNode(fmt.Sprintf("%d", id))
+		dnsNames, ips := auth.AddrsToSANs(addrs[i])
+		leaf, err := ca.Issue("node", fmt.Sprintf("%d", id), dnsNames, ips)
 		if err != nil {
 			return err
 		}
@@ -76,11 +88,11 @@ func GenerateFleet(clusterID string, outDir string, addrs, httpAddrs, dataDirs [
 			NodeID: id, ClusterID: clusterID, DataDir: dataDirs[i],
 			ListenAddr: httpAddrs[i], QuicListen: addrs[i],
 			Peers: peers, CACert: caPath, NodeCert: crtPath, NodeKey: keyPath,
-			Volume:           VolumeSpec{Name: "default", Consistency: "strict", VoterCount: 3, ChunkSizeBytes: 65536, Durability: "quorum", QuotaBytes: 214748364800, MaxFileBytes: 17179869184},
-			ElectionTick:     20,
-			HeartbeatTick:    5,
-			RequestDeadline:  5_000_000_000,
-			ShutdownTimeout:  30_000_000_000,
+			Volume:          VolumeSpec{Name: "default", Consistency: "strict", VoterCount: 3, ChunkSizeBytes: 65536, Durability: "quorum", QuotaBytes: 214748364800, MaxFileBytes: 17179869184},
+			ElectionTick:    20,
+			HeartbeatTick:   5,
+			RequestDeadline: 5_000_000_000,
+			ShutdownTimeout: 30_000_000_000,
 		}
 		b, err := json.MarshalIndent(cfg, "", "  ")
 		if err != nil {
@@ -91,4 +103,45 @@ func GenerateFleet(clusterID string, outDir string, addrs, httpAddrs, dataDirs [
 		}
 	}
 	return nil
+}
+
+// RotateNode is the operator-side leaf rotation entry point (Iter-8-06): it
+// loads the retained cluster CA (ca.pem + ca.key under outDir), issues a fresh
+// node leaf for the given voter id, and rewrites that node's cert/key files.
+// The CA key never leaves the operator's hands; the old leaf simply reaches its
+// 825-day NotAfter before the node is restarted on the new key/cert.
+func RotateNode(outDir string, id uint64, quicAddr string) (*auth.Leaf, error) {
+	caCert, err := os.ReadFile(filepath.Join(outDir, "ca.pem"))
+	if err != nil {
+		return nil, err
+	}
+	caKey, err := os.ReadFile(filepath.Join(outDir, "ca.key"))
+	if err != nil {
+		return nil, err
+	}
+	ca, err := auth.NewCAFromPEM(caCert, caKey)
+	if err != nil {
+		return nil, err
+	}
+	if quicAddr == "" {
+		quicAddr = fmt.Sprintf("127.0.0.1:%d", 5000+int(id-1))
+	}
+	dnsNames, ips := auth.AddrsToSANs(quicAddr)
+	leaf, err := ca.Rotate("node", fmt.Sprintf("%d", id), dnsNames, ips)
+	if err != nil {
+		return nil, err
+	}
+	crtPath := filepath.Join(outDir, fmt.Sprintf("node-%d.pem", id))
+	keyPath := filepath.Join(outDir, fmt.Sprintf("node-%d.key", id))
+	if err := os.WriteFile(crtPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.DER}), 0600); err != nil {
+		return nil, err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(leaf.Key)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
+		return nil, err
+	}
+	return leaf, nil
 }

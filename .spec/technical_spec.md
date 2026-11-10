@@ -267,7 +267,10 @@ none. Preconditions prevent accidental lost updates.
 All paths are daemon-private. WAL records, snapshots, packs, and Pebble state
 include a format version, length bounds, and checksums. Pack record format: `[length][BLAKE3-256(chunk)][data][fsync-mark]` — every pack append is followed by `fdatasync` of the pack file AND `fsync` of the containing directory (file durability ≠ name durability; `fsyncdir` per-parent quorum is required for rename/create, `Datasync` flag distinguishes fdatasync, and `Flush ≠ Fsync ≠ Release` in the FUSE adapter — research/02-fuse-posix.md G-4). Recovery never accepts a
 truncated valid-prefix record as a committed command unless the Raft hard state
-proves it was persisted. Chunk dedup race (two writers writing the same `ChunkID` concurrently): the leader OWNS chunk-index insertion; followers use idempotent insert of identical-bytes content (same hash, divergent offsets are safe).
+proves it was persisted. WAL record checksums cover the record header as well as
+the payload; a record failing its checksum is treated as torn **only at end-of-log
+(EOF)** — any other mid-log corruption fails closed (quarantine / non-voting) rather
+than truncating a potentially committed suffix. Chunk dedup race (two writers writing the same `ChunkID` concurrently): the leader OWNS chunk-index insertion; followers use idempotent insert of identical-bytes content (same hash, divergent offsets are safe).
 
 ## 8. Protocol and transaction lifecycle
 
@@ -308,6 +311,9 @@ sequence:
 8. Persist the Raft entry and hard state before sending Raft acknowledgements.
    Wait for majority commit, fetch any missing chunks before local application,
    atomically apply the metadata batch, and durably record the operation result.
+   The leader MUST NOT acknowledge the operation to the client until the proposed
+   entry has been applied locally and the operation result durably recorded; an
+   entry that has been committed but not yet applied MUST NOT be acknowledged.
 9. Send invalidation notifications and return success to the FUSE client.
 
 Metadata-only operations skip chunk preparation but retain the same validation,
@@ -390,6 +396,12 @@ kernel's uid/gid credentials. A compromised root user on that host can already
 impersonate local users; that host is therefore inside the volume's trust
 boundary. Server-side POSIX checks remain mandatory to prevent ordinary client
 processes from bypassing permission policy.
+
+Control-plane and data-plane HTTP surface: the daemon's loopback HTTP endpoints
+(`/healthz`, `/readyz`, `/metrics`, `/volume/*`) bind to loopback by default and
+require mTLS or a bearer token while enforcing bounded request bodies; the former
+unauthenticated `POST /raft/propose` path is removed — administrative and mutation
+traffic flows through the Raft quorum path with the apply barrier of section 8.2.
 
 ## 10. Failure and recovery behavior
 

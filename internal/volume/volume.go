@@ -23,9 +23,9 @@ type Coordinator struct {
 	stores      map[uint64]*chunkstore.Store // voter id -> chunk store
 	remote      map[uint64]RemotePutter      // voter id -> network putter
 	quorum      int
-	nextIdx     uint64 // monotonic RaftIndex allocator (direct-Apply path only)
+	nextIdx     uint64           // monotonic RaftIndex allocator (direct-Apply path only)
 	driver      DriverGapChecker // optional; consulted before serving writes
-	leases      *lease.Manager // optional; revoked+waited before proposing (§8.2 step 6)
+	leases      *lease.Manager   // optional; revoked+waited before proposing (§8.2 step 6)
 	proposeRaft func(ctx context.Context, data []byte) (uint64, error)
 }
 
@@ -192,10 +192,15 @@ func (c *Coordinator) ProposeCommand(ctx context.Context, opID [16]byte, cmd *sy
 		if err != nil {
 			return metadata.OpResult{}, err
 		}
-		if err := c.fsm.Apply(opID, idx, cmd); err != nil {
-			return metadata.OpResult{}, err
+		// The Raft path applies through the driver's apply loop (which waits
+		// for the proposed entry's commit+apply before returning idx) and
+		// retains the op result there; surface it. No direct Apply here — the
+		// leader must never apply outside the apply loop (2026-11-10 execution
+		// review, Iter-8-01).
+		r, ok := c.fsm.GetOp(opID)
+		if !ok {
+			return metadata.OpResult{}, fmt.Errorf("volume: op %x not retained after raft apply at %d", opID, idx)
 		}
-		r, _ := c.fsm.GetOp(opID)
 		return *r, nil
 	}
 	if cmd.Kind == syncfsapi.CommandKind_WRITE_RANGES {

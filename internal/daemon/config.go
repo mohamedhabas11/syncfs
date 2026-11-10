@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -23,8 +25,8 @@ type Peer struct {
 type VolumeSpec struct {
 	Name           string `json:"name"`
 	FormatVersion  uint32 `json:"format_version"`
-	Consistency    string `json:"consistency"` // MVP: strict
-	VoterCount     int    `json:"voter_count"`  // MVP: exactly 3
+	Consistency    string `json:"consistency"`      // MVP: strict
+	VoterCount     int    `json:"voter_count"`      // MVP: exactly 3
 	ChunkSizeBytes uint32 `json:"chunk_size_bytes"` // MVP: 65536 (immutable)
 	Durability     string `json:"durability"`       // MVP: quorum
 	QuotaBytes     uint64 `json:"quota_bytes"`
@@ -34,22 +36,26 @@ type VolumeSpec struct {
 // Config is the validated daemon configuration. Unknown JSON fields are
 // rejected so typos fail closed instead of being silently ignored.
 type Config struct {
-	NodeID      uint64 `json:"node_id"`
-	ClusterID   string `json:"cluster_id"`
-	DataDir     string `json:"data_dir"`
-	ListenAddr  string `json:"listen_addr"`  // HTTP metrics/health (e.g. 127.0.0.1:8080)
-	QuicListen  string `json:"quic_listen"`  // QUIC peer endpoint (e.g. :5001)
-	Peers       []Peer `json:"peers"`        // all voters including self
-	CACert      string `json:"ca_cert"`
-	NodeCert    string `json:"node_cert"`
-	NodeKey     string `json:"node_key"`
-	Volume      VolumeSpec `json:"volume"`
+	NodeID     uint64     `json:"node_id"`
+	ClusterID  string     `json:"cluster_id"`
+	DataDir    string     `json:"data_dir"`
+	ListenAddr string     `json:"listen_addr"` // HTTP metrics/health (e.g. 127.0.0.1:8080)
+	QuicListen string     `json:"quic_listen"` // QUIC peer endpoint (e.g. :5001)
+	Peers      []Peer     `json:"peers"`       // all voters including self
+	CACert     string     `json:"ca_cert"`
+	NodeCert   string     `json:"node_cert"`
+	NodeKey    string     `json:"node_key"`
+	Volume     VolumeSpec `json:"volume"`
 	// Operational timeouts (all must be > 0).
 	ElectionTick    int           `json:"election_tick"`    // Raft election ticks
 	HeartbeatTick   int           `json:"heartbeat_tick"`   // Raft heartbeat ticks
 	RequestDeadline time.Duration `json:"request_deadline"` // e.g. "5s"
 	// Shutdown timeout: SIGTERM must complete within this bound.
 	ShutdownTimeout time.Duration `json:"shutdown_timeout"` // e.g. "30s"
+	// AdminToken optionally requires a bearer token for mutating endpoints
+	// (/volume/*). Empty disables the token gate (loopback-only posture still
+	// applies). 2026-11-10 execution review, Iter-8-05.
+	AdminToken string `json:"admin_token,omitempty"`
 }
 
 // LoadConfig reads and validates the daemon config file.
@@ -74,6 +80,80 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+// UnmarshalJSON decodes a daemon config. Operational durations accept both
+// JSON strings ("5s") and raw nanosecond numbers (Iter-8-08: the operator
+// profile emits `"request_deadline": "5s"`; the Go default marshals numbers).
+func (c *Config) UnmarshalJSON(data []byte) error {
+	var rc struct {
+		NodeID          uint64          `json:"node_id"`
+		ClusterID       string          `json:"cluster_id"`
+		DataDir         string          `json:"data_dir"`
+		ListenAddr      string          `json:"listen_addr"`
+		QuicListen      string          `json:"quic_listen"`
+		Peers           []Peer          `json:"peers"`
+		CACert          string          `json:"ca_cert"`
+		NodeCert        string          `json:"node_cert"`
+		NodeKey         string          `json:"node_key"`
+		Volume          VolumeSpec      `json:"volume"`
+		ElectionTick    int             `json:"election_tick"`
+		HeartbeatTick   int             `json:"heartbeat_tick"`
+		RequestDeadline json.RawMessage `json:"request_deadline"`
+		ShutdownTimeout json.RawMessage `json:"shutdown_timeout"`
+		AdminToken      string          `json:"admin_token,omitempty"`
+	}
+	if err := json.Unmarshal(data, &rc); err != nil {
+		return err
+	}
+	c.NodeID = rc.NodeID
+	c.ClusterID = rc.ClusterID
+	c.DataDir = rc.DataDir
+	c.ListenAddr = rc.ListenAddr
+	c.QuicListen = rc.QuicListen
+	c.Peers = rc.Peers
+	c.CACert = rc.CACert
+	c.NodeCert = rc.NodeCert
+	c.NodeKey = rc.NodeKey
+	c.Volume = rc.Volume
+	c.ElectionTick = rc.ElectionTick
+	c.HeartbeatTick = rc.HeartbeatTick
+	c.RequestDeadline = parseDurationBytes(rc.RequestDeadline)
+	c.ShutdownTimeout = parseDurationBytes(rc.ShutdownTimeout)
+	c.AdminToken = rc.AdminToken
+	return nil
+}
+
+// parseDuration accepts a Go duration string ("5s") or raw JSON (number =
+// nanoseconds, or string fallback).
+func parseDurationBytes(raw json.RawMessage) time.Duration {
+	if len(raw) == 0 {
+		return 0
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return parseDuration(s)
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return time.Duration(n)
+	}
+	return 0
+}
+
+// parseDuration accepts a Go duration string ("5s").
+func parseDuration(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return d
+	}
+	var n int64
+	if err := json.Unmarshal([]byte(s), &n); err == nil {
+		return time.Duration(n)
+	}
+	return 0
+}
+
 // Validate enforces the production topology and fail-closed defaults.
 func (c Config) Validate() error {
 	if c.NodeID == 0 {
@@ -90,6 +170,11 @@ func (c Config) Validate() error {
 	}
 	if c.ListenAddr == "" {
 		return fmt.Errorf("daemon: listen_addr is required")
+	}
+	if host, _, err := net.SplitHostPort(c.ListenAddr); err == nil {
+		if !isLoopbackHost(host) {
+			return fmt.Errorf("daemon: listen_addr %q must be loopback for the MVP data plane", c.ListenAddr)
+		}
 	}
 	if c.QuicListen == "" {
 		return fmt.Errorf("daemon: quic_listen is required")
@@ -179,6 +264,18 @@ func (c Config) Voters() []uint64 {
 		out[i] = p.ID
 	}
 	return out
+}
+
+// isLoopbackHost reports whether host is a loopback address.
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "127.0.0.0.1", "::1", "[::1":
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
 }
 
 // PeerAddr returns the QUIC address for a voter ID.

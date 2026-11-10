@@ -10,11 +10,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,9 +26,9 @@ import (
 	"github.com/mohamedhabas11/syncfs/internal/auth"
 	"github.com/mohamedhabas11/syncfs/internal/chunkstore"
 	"github.com/mohamedhabas11/syncfs/internal/metadata"
-	"github.com/mohamedhabas11/syncfs/internal/raftstore/snapshot"
 	"github.com/mohamedhabas11/syncfs/internal/observability"
 	"github.com/mohamedhabas11/syncfs/internal/raftstore/driver"
+	"github.com/mohamedhabas11/syncfs/internal/raftstore/snapshot"
 	"github.com/mohamedhabas11/syncfs/internal/raftstore/wal"
 	"github.com/mohamedhabas11/syncfs/internal/transport"
 	"github.com/mohamedhabas11/syncfs/internal/volume"
@@ -139,7 +142,7 @@ func New(cfg Config) (*Daemon, error) {
 	d := &Daemon{
 		cfg: cfg, wal: st, chunk: chunk, fsm: fsm, drv: drv,
 		collector: observability.NewCollector(),
-		self: self, cliTLS: cliTLS, srvTLS: srvTLS,
+		self:      self, cliTLS: cliTLS, srvTLS: srvTLS,
 		peerConns: map[uint64]*quic.Conn{},
 	}
 	// Coordinator: local chunk store + remote putters over QUIC ClassChunk,
@@ -162,22 +165,23 @@ func New(cfg Config) (*Daemon, error) {
 	coord.SetRemotePutters(remote)
 	coord.SetQuorum(cfg.Quorum())
 	coord.SetRaftProposer(func(c context.Context, data []byte) (uint64, error) {
+		// The proposed entry lands at lastIndex+1 (log is contiguous; entries
+		// at/below the snapshot base are covered by the restored snapshot).
+		last, lerr := st.LastIndex()
+		if lerr != nil {
+			return 0, lerr
+		}
+		idx := last + 1
 		if err := drv.Propose(c, data); err != nil {
 			return 0, err
 		}
-		// Poll FSM until the entry commits+applies (bounded by RequestDeadline).
-		deadline := time.Now().Add(cfg.RequestDeadline)
-		for time.Now().Before(deadline) {
-			hs, _, herr := st.InitialState()
-			if herr == nil && hs.Commit > 0 {
-				// Commit advanced; the apply loop will Apply and Persist.
-				// Return the commit index (actual opID lookup happens in
-				// ProposeCommand via GetOp).
-				return hs.Commit, nil
-			}
-			time.Sleep(10 * time.Millisecond)
+		// Do not acknowledge until the proposed entry has committed and been
+		// applied locally (spec 8.2 step 8). Wait for the apply loop to durably
+		// process the entry at idx; return its Raft index for the op result.
+		if err := d.WaitApplied(c, idx); err != nil {
+			return 0, err
 		}
-		return 0, fmt.Errorf("daemon: raft commit timeout")
+		return idx, nil
 	})
 	d.coord = coord
 	d.recovered.Store(true)
@@ -333,6 +337,72 @@ func (d *Daemon) Propose(ctx context.Context, data []byte) error {
 	return d.drv.Propose(ctx, data)
 }
 
+// requireAdminToken enforces the optional bearer-token gate on mutating
+// HTTP endpoints. Empty token disables the gate (loopback-only posture still
+// applies via Config validation). Read-only endpoints (healthz/readyz/metrics)
+// are intentionally unauthenticated on the local control surface.
+func (d *Daemon) requireAdminToken(r *http.Request, w http.ResponseWriter) bool {
+	if d.cfg.AdminToken == "" {
+		return true
+	}
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	if !d.tokenValid(strings.TrimPrefix(auth, prefix)) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+// tokenValid reports whether the presented bearer token matches config.
+func (d *Daemon) tokenValid(tok string) bool {
+	return d.cfg.AdminToken != "" && tok == d.cfg.AdminToken
+}
+
+// WaitApplied blocks until the apply loop has durably processed (and
+// recorded) the outcome of the command entry at Raft index idx, or ctx
+// expires. Leaders use this to acknowledge a quorum-committed write only
+// after that specific entry has been applied (spec 8.2 step 8) — never before
+// the commit/apply barrier (2026-11-10 execution review, Iter-8-01).
+func (d *Daemon) WaitApplied(ctx context.Context, idx uint64) error {
+	deadline := time.Now().Add(d.cfg.RequestDeadline)
+	for {
+		if d.applied.Load() >= idx {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("daemon: apply deadline exceeded at index %d (applied %d)", idx, d.applied.Load())
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+}
+
+// chunkReceiptJSON is one /volume/chunks durable-receipt entry (Iter-8-07).
+type chunkReceiptJSON struct {
+	ChunkID string `json:"chunk_id"`
+	PeerID  uint64 `json:"peer_id"`
+}
+
+// chunksResponse is the /volume/chunks response envelope.
+type chunksResponse struct {
+	Receipts []chunkReceiptJSON `json:"receipts"`
+}
+
+// chunkIDHex renders a 32-byte BLAKE3 chunk id as lowercase hex.
+func chunkIDHex(id chunkstore.ChunkID) string {
+	b := make([]byte, len(id))
+	copy(b, id[:])
+	return hex.EncodeToString(b)
+}
+
 // Run serves until ctx is done: HTTP (health/metrics) + QUIC peer mesh +
 // Raft tick/step loop + metrics ticker. It blocks. Graceful shutdown is
 // bounded by ShutdownTimeout: stop admission, drain messages, persist, close.
@@ -345,14 +415,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.quicLn = ql
 
 	// HTTP: /healthz (liveness), /readyz (readiness), /metrics (prometheus),
-	// POST /raft/propose (raw Raft entry bytes for fleet verification),
 	// POST /volume/chunks (quorum chunk prepare) + /volume/command (protobuf Command).
+	// Mutating endpoints require the configured admin bearer token; the surface
+	// is loopback-bound by config validation (2026-11-10 execution review, Iter-8-05).
 	mux := http.NewServeMux()
 	// POST /volume/chunks: raw body is split into 64KiB chunks and stored
 	// on a majority (WriterChunks). Response is newline-separated 32B hex IDs.
 	mux.HandleFunc("/volume/chunks", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		if !d.requireAdminToken(r, w) {
 			return
 		}
 		if !d.Ready() {
@@ -362,6 +436,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<26))
 		if err != nil || len(body) == 0 {
 			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if len(body) > (1 << 26) {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		var chunks [][]byte
@@ -379,15 +457,31 @@ func (d *Daemon) Run(ctx context.Context) error {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		_ = receipts
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("chunks-durable"))
+		// Return the durable receipts so the FUSE syncer can attach them to the
+		// WRITE_RANGES command (payload-before-reference: a committed manifest
+		// requires majority receipts; without them the commit is refused).
+		resp := chunksResponse{Receipts: make([]chunkReceiptJSON, 0, len(receipts))}
+		for _, r := range receipts {
+			resp.Receipts = append(resp.Receipts, chunkReceiptJSON{
+				ChunkID: chunkIDHex(r.ChunkID),
+				PeerID:  r.PeerID,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	})
+
 	// POST /volume/command: protobuf Command (Content-Type: application/protobuf).
 	// Proposes via the coordinator (chunk receipts already attached for WRITE_RANGES).
 	mux.HandleFunc("/volume/command", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		if !d.requireAdminToken(r, w) {
 			return
 		}
 		if !d.Ready() {
@@ -397,6 +491,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<22))
 		if err != nil {
 			http.Error(w, "read error", http.StatusBadRequest)
+			return
+		}
+		if len(body) > (1<<22) || len(body) == 0 {
+			http.Error(w, "invalid body", http.StatusRequestEntityTooLarge)
 			return
 		}
 		var cmd syncfsapi.Command
@@ -422,31 +520,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 		_ = out
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(fmt.Sprintf(`{"state":%q,"raft_index":%d}`, res.State, res.RaftIndex)))
-	})
-	mux.HandleFunc("/raft/propose", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil || len(body) == 0 || len(body) > (1<<20) {
-			http.Error(w, "invalid body", http.StatusBadRequest)
-			return
-		}
-		if !d.Ready() {
-			// Leader may be elsewhere; this node reports not-ready so the
-			// client can retry the leader's endpoint.
-			http.Error(w, "not-ready", http.StatusServiceUnavailable)
-			return
-		}
-		c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := d.drv.Propose(c, body); err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("proposed"))
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		if !d.Live() {
@@ -490,9 +563,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
-	// Raft tick/step/apply loop. Per-node tick interval breaks synchronized
-	// election lockstep (PreVote split-vote without jitter). 25ms base with
-	// 5ms per-node offset gives 25/30/35ms ticks (500ms+ election windows).
+	// Raft tick/step/apply loop. A dedicated `for range` over the driver's
+	// Ready channel consumes raft Ready cycles (Tick only advances the logical
+	// clock); a committed entry is persisted, advanced, delivered and applied
+	// here, and the leader acknowledges writes only once the applied index has
+	// reached the proposed entry's index (2026-11-10 execution review, Iter-8).
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
@@ -510,7 +585,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 				return
 			case <-tick.C:
 				d.drv.Tick()
-				msgs, err := d.drv.Step(ctx)
+			case <-metricsTick.C:
+				d.refreshMetrics()
+			case r := <-d.drv.ReadyCh():
+				msgs, err := d.drv.StepReady(r)
 				if err != nil {
 					log.Printf("daemon node %d: raft step: %v", d.cfg.NodeID, err)
 					continue
@@ -521,8 +599,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 				for _, m := range msgs {
 					go d.sendRaft(ctx, m)
 				}
-			case <-metricsTick.C:
-				d.refreshMetrics()
 			case e := <-applyCh:
 				if e.Type == raftpb.EntryConfChange || e.Type == raftpb.EntryConfChangeV2 {
 					if err := d.drv.ApplyConfChange(e); err != nil {
@@ -545,6 +621,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 					continue
 				}
 				if err := d.fsm.Apply(opID, e.Index, &cmd); err != nil {
+					// The FSM records a REJECTED outcome in the op result; the
+					// entry has now been processed at this index either way, so
+					// the fencing/applied index must advance (never wedge on a
+					// rejected command).
+					d.applied.Store(e.Index)
+					d.drv.RetryApply()
 					continue
 				}
 				// Durably persist the projection before acknowledging
@@ -681,7 +763,7 @@ func (d *Daemon) acceptChunkStream(st interface {
 // sendRaft delivers one Raft message to its destination voter via QUIC
 // using a persistent peer connection (reused across messages).
 func (d *Daemon) sendRaft(ctx context.Context, m raftpb.Message) {
-		if m.To == 0 || m.To == d.cfg.NodeID {
+	if m.To == 0 || m.To == d.cfg.NodeID {
 		return
 	}
 	conn, err := d.peerConn(ctx, m.To)
@@ -736,7 +818,7 @@ func (d *Daemon) Snapshot() error {
 	applied := d.applied.Load()
 	snap := raftpb.Snapshot{
 		Metadata: raftpb.SnapshotMetadata{Index: applied, Term: hs.Term, ConfState: raftpb.ConfState{Voters: d.cfg.Voters()}},
-		Data: data,
+		Data:     data,
 	}
 	walDir := d.cfg.DataDir + "/groups/default/wal"
 	if err := snapshot.WriteSnapshotFileWithIDs(walDir, &snap, d.cfg.ClusterID, d.cfg.Volume.Name); err != nil {

@@ -23,6 +23,19 @@ raises a measurable correctness threshold before adding scope.
 | 4 | Workload qualification | DEFERRED (ADR-0001) | needs reference hardware |
 | 5 | Selective expansion | Later | ADR + milestone tests |
 
+## Post-review hardening track (2026-11-10)
+
+Work packages `Iter-8-01`..`Iter-8-10` (see `.spec/tasks.md` §"Iteration 8") turn the
+2026-11-10 post-implementation execution findings into the next iteration loops:
+
+1. P0 fixes together (leader quorum-commit apply barrier, daemon election `Ready`
+   loop, WAL conflicting-suffix overwrite, WAL mid-log fail-closed);
+2. P1 secure (HTTP data plane, TLS SAN/CA-key/rotation, FUSE→daemon write path);
+3. P2 hygiene + read-only confirmations (config durations, format gate, admin/mount
+   CLI, Apply cost, packaging, release/CI gates);
+4. Real 3-daemon end-to-end test (kill follower + leader) before re-claiming release
+   readiness.
+
 ## Next Formal Milestone
 
 ### Objective
